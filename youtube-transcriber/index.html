@@ -128,6 +128,9 @@
   .hist-head { display: flex; justify-content: space-between; align-items: baseline; }
   #yt-holder { position: absolute; left: -10000px; top: 0; width: 320px; height: 180px; overflow: hidden; }
   .foot { margin-top: 24px; font-size: 12.5px; color: var(--muted); }
+  .log { margin-top: 12px; border-top: 0; padding-top: 0; }
+  .log pre { margin: 8px 0 0; padding: 10px 12px; background: var(--field); border: 1px solid var(--line); border-radius: 10px;
+    font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -210,6 +213,10 @@
       </div>
       <div id="barWrap" class="bar" hidden><div id="bar"></div></div>
       <div id="msg" class="msg" hidden></div>
+      <details id="logBox" class="log" hidden>
+        <summary>詳しいログ（うまくいかないときは、ここを開いた画面を送ってください）</summary>
+        <pre id="log"></pre>
+      </details>
 
       <div class="tools">
         <button id="copy" class="small" type="button" disabled>コピー</button>
@@ -221,7 +228,7 @@
     </section>
   </div>
 
-  <p class="foot">動画のURLはGoogleのGemini APIに送られ、Google側で動画を読み込んで文字起こしします（サーバーからYouTubeをダウンロードしないため、ボット確認で止まりません）。API利用料はキーの持ち主に請求されます。無料枠ではYouTube動画は1日8時間ぶんまでです。</p>
+  <p class="foot">バージョン 2026-11-23c<br>動画のURLはGoogleのGemini APIに送られ、Google側で動画を読み込んで文字起こしします（サーバーからYouTubeをダウンロードしないため、ボット確認で止まりません）。API利用料はキーの持ち主に請求されます。無料枠ではYouTube動画は1日8時間ぶんまでです。</p>
 </div>
 <div id="yt-holder" aria-hidden="true"></div>
 
@@ -253,7 +260,19 @@
     thumb: $('thumb'), title: $('out-title'), chars: $('chars'), prog: $('prog'), badge: $('badge'),
     barWrap: $('barWrap'), bar: $('bar'), msg: $('msg'), copy: $('copy'), save: $('save'), showTs: $('showTs'), out: $('out'),
     hist: $('hist'), histEmpty: $('histEmpty'), histCount: $('histCount'),
+    logBox: $('logBox'), log: $('log'),
   };
+
+  // Diagnostic log shown under the message (never contains the API key).
+  function logLine(text) {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const line = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}  ${text}`;
+    el.logBox.hidden = false;
+    el.log.textContent += (el.log.textContent ? '\n' : '') + line;
+    el.log.scrollTop = el.log.scrollHeight;
+  }
+  function clearLog() { el.log.textContent = ''; }
 
   // ---------- pure helpers ----------
   function parseVideoId(input) {
@@ -282,7 +301,8 @@
     return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
   }
 
-  const TS_RE = /^\s*[\[【(（]\s*((?:\d{1,2}:)?\d{1,2}:\d{2})\s*[\]】)）]\s*/;
+  // [MM:SS] / [H:MM:SS], also tolerating **bold**, full-width brackets and ranges like [00:00 - 00:30]
+  const TS_RE = /^\s*(?:\*\*)?\s*[\[【(（]\s*((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s*[-–—〜~]\s*(?:\d{1,2}:)?\d{1,2}:\d{2})?\s*[\]】)）]\s*(?:\*\*)?\s*/;
   const END_RE = /\[\s*END\s*\]/gi;
 
   function tsToSec(str) {
@@ -424,6 +444,7 @@
     job.modelIdx++;
     job.compat = 0;
     setStatus(`・${reason}、${currentModel(job)} に切り替えて続けます…`);
+    logLine(`モデル切替: ${reason} → ${currentModel(job)}`);
     return true;
   }
 
@@ -436,6 +457,7 @@
       const model = currentModel(job);
       const endpoint = API_BASE + encodeURIComponent(model) + ':streamGenerateContent?alt=sse';
       const body = buildBody(job, userText, job.compat);
+      logLine(`→ 送信 ${model}（${fmt(job.passStart)}〜／互換レベル${job.compat}）`);
       let res;
       try {
         res = await fetch(endpoint, {
@@ -446,6 +468,7 @@
         });
       } catch (e) {
         if (job.aborted) throw stopped();
+        logLine(`× 通信エラー: ${e && e.message ? e.message : e}`);
         if (netErrors++ < 2) { await waitWithStatus(job, 3000 * netErrors, `通信エラー。{s}秒後に再試行します（${netErrors}/2）`); continue; }
         throw new AppError('Geminiに接続できませんでした。ネットワークを確認して「続きから再開」を押してください。', { retryable: true });
       }
@@ -453,6 +476,7 @@
       if (!res.ok) {
         let msg = '';
         try { const j = await res.json(); msg = (j && j.error && j.error.message) || ''; } catch (e) { /* not json */ }
+        logLine(`← エラー ${res.status}: ${msg || res.statusText || '(説明なし)'}`);
         const keyProblem = /api key/i.test(msg);
         if (res.status === 400 && job.compat < 2 && !keyProblem) { job.compat++; continue; }
         if (res.status === 404 && switchModel(job, `モデル「${model}」が使えないため`)) { busyRetries = 0; continue; }
@@ -468,6 +492,7 @@
       }
 
       const result = { finishReason: null, blockReason: null };
+      let received = 0;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -476,13 +501,16 @@
         if (!data) return;
         let obj;
         try { obj = JSON.parse(data); } catch (e) { return; }
-        if (obj.error) throw new AppError(apiErrorMessage(obj.error.code || 500, obj.error.message, currentModel(job)), { retryable: true });
+        if (obj.error) {
+          logLine(`× 受信中のエラー ${obj.error.code || ''}: ${obj.error.message || ''}`);
+          throw new AppError(apiErrorMessage(obj.error.code || 500, obj.error.message, currentModel(job)), { retryable: true });
+        }
         if (obj.promptFeedback && obj.promptFeedback.blockReason) result.blockReason = obj.promptFeedback.blockReason;
         const cand = obj.candidates && obj.candidates[0];
         if (!cand) return;
         const parts = (cand.content && cand.content.parts) || [];
         const text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('');
-        if (text) onText(text);
+        if (text) { received += text.length; onText(text); }
         if (cand.finishReason) result.finishReason = cand.finishReason;
       };
       try {
@@ -501,8 +529,10 @@
       } catch (e) {
         if (job.aborted) throw stopped();
         if (e instanceof AppError) throw e;
+        logLine(`× 受信の途中で切断: ${e && e.message ? e.message : e}（${received}文字受信済み）`);
         throw new AppError('受信の途中で接続が切れました。「続きから再開」を押してください。', { retryable: true });
       }
+      logLine(`← 受信完了 ${model}: ${received}文字／終了理由 ${result.finishReason || 'なし'}${result.blockReason ? '／ブロック ' + result.blockReason : ''}`);
       return result;
     }
   }
@@ -644,14 +674,20 @@
       showHeader(videoId, null);
       el.barWrap.hidden = true;
       el.bar.style.width = '0';
+      clearLog();
+      logLine(`開始 ${job.url}／モデルの順番: ${job.models.join(' → ')}`);
       getVideoInfo(videoId).then((info) => {
-        if (!info || !job || job.videoId !== videoId) return;
+        if (!job || job.videoId !== videoId) return;
+        logLine(info && info.duration ? `動画の長さ ${fmt(info.duration)}` : '動画の長さは取得できず（文字起こしは続行）');
+        if (!info) return;
         if (info.duration) job.duration = info.duration;
         if (info.title) { job.title = info.title; el.title.textContent = info.title; }
         queueRender();
       });
     } else if (!job) {
       return;
+    } else {
+      logLine(`続きから再開（${fmt(job.passStart)}〜）`);
     }
     job.key = key;
     job.running = true;
@@ -675,6 +711,7 @@
           // Overload or a dropped stream: keep what arrived and resume from the last paragraph by itself.
           if (!(e instanceof AppError) || !e.retryable || job.aborted || job.autoResumes >= MAX_AUTO_RESUMES) throw e;
           job.autoResumes++;
+          logLine(`自動で再開します ${job.autoResumes}/${MAX_AUTO_RESUMES}`);
           commitRaw(job);
           rewindToLastParagraph(job);
           job.modelIdx = 0;
@@ -697,6 +734,7 @@
         if (stopMsg) { outcome = 'partial'; warning = stopMsg; break; }
 
         const last = maxT(job.committed);
+        logLine(`区間の結果: 最後の時刻 ${last === null ? 'なし' : fmt(last)}／[END] ${sawEnd ? 'あり' : 'なし'}／合計 ${countChars(job.committed)}文字`);
         if (last === null) {
           if (res.finishReason === 'MAX_TOKENS') warning = '出力の上限に達したため、途中までの結果です。';
           if (!job.committed.length) { outcome = 'partial'; warning = '文字起こしの結果が空でした。音声のない動画か、Geminiが動画を読み込めなかった可能性があります。'; }
@@ -730,6 +768,7 @@
     viewSegs = job.committed.slice();
     viewTitle = job.title || `YouTube動画（${job.videoId}）`;
     setStatus('');
+    logLine(`終了: ${{ done: '完了', partial: '途中で終了', error: 'エラー', stopped: '停止' }[outcome]}${warning ? '／' + warning.split('\n')[0] : ''}`);
     if (outcome === 'done') {
       const usedFallback = job.modelIdx > 0 ? `（混雑のため ${currentModel(job)} を使用）` : '';
       setMsg(warning ? 'warn' : 'info', warning || '文字起こしが完了しました。' + usedFallback);
