@@ -238,8 +238,11 @@
   };
 
   const DEFAULT_MODEL = 'gemini-flash-latest';
+  // Tried in order when the chosen model is overloaded (503/429) or missing (404).
+  const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
   const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
   const MAX_PASSES = 40;
+  const MAX_AUTO_RESUMES = 3;
   const HISTORY_LIMIT = 30;
 
   const $ = (id) => document.getElementById(id);
@@ -377,6 +380,7 @@
   class AppError extends Error {
     constructor(message, opts) { super(message); this.retryable = !!(opts && opts.retryable); }
   }
+  const stopped = () => new AppError('停止しました。');
 
   function apiErrorMessage(status, msg, model) {
     const detail = msg ? `\n（Geminiからのメッセージ: ${msg}）` : '';
@@ -384,8 +388,8 @@
     if (status === 400) return 'リクエストが受け付けられませんでした。動画が非公開・限定公開・メンバー限定・年齢制限付きでないか確認してください。' + detail;
     if (status === 403) return 'このAPIキーでは実行できません（権限がない、またはGemini APIが無効です）。Google AI Studioでキーを確認してください。' + detail;
     if (status === 404) return `モデル「${model}」が見つかりません。「APIキーと詳細設定」のモデル名を、Google AI Studioに表示されている名前に変えてください。` + detail;
-    if (status === 429) return '利用上限に達しました。無料枠ではYouTube動画は1日8時間ぶんまでです。時間をおいて「続きから再開」を押すか、Google AI Studioで課金を有効にしてください。' + detail;
-    if (status >= 500) return 'Gemini側で一時的なエラーが起きました。少し待って「続きから再開」を押してください。' + detail;
+    if (status === 429) return '利用上限に達しました（予備のモデルも含めて試しました）。無料枠ではYouTube動画は1日8時間ぶんまでです。時間をおいて「続きから再開」を押すか、Google AI Studioで課金を有効にしてください。' + detail;
+    if (status >= 500) return 'Geminiの混雑が続いています（予備のモデルも含めて自動で何度か試しました）。数分おいて「続きから再開」を押してください。' + detail;
     return `エラーが発生しました（${status}）。` + detail;
   }
 
@@ -402,12 +406,35 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Waits while showing a countdown; returns early with an error if the user presses 停止.
+  async function waitWithStatus(job, ms, label) {
+    const end = Date.now() + ms * (window.__yttWaitScale || 1); // scale is set only by automated tests
+    const shownSec = (left) => Math.ceil(left / (window.__yttWaitScale || 1) / 1000);
+    while (Date.now() < end) {
+      if (job.aborted) throw stopped();
+      setStatus('・' + label.replace('{s}', String(shownSec(end - Date.now()))));
+      await sleep(Math.min(500, Math.max(0, end - Date.now())));
+    }
+  }
+
+  function currentModel(job) { return job.models[job.modelIdx]; }
+
+  function switchModel(job, reason) {
+    if (job.modelIdx + 1 >= job.models.length) return false;
+    job.modelIdx++;
+    job.compat = 0;
+    setStatus(`・${reason}、${currentModel(job)} に切り替えて続けます…`);
+    return true;
+  }
+
   // ---------- Gemini streaming call ----------
   async function streamPass(job, userText, onText) {
-    const endpoint = API_BASE + encodeURIComponent(job.model) + ':streamGenerateContent?alt=sse';
-    let transient = 0;
+    let netErrors = 0;
+    let busyRetries = 0; // retries on the current model
     for (;;) {
-      if (job.aborted) throw new AppError('停止しました。');
+      if (job.aborted) throw stopped();
+      const model = currentModel(job);
+      const endpoint = API_BASE + encodeURIComponent(model) + ':streamGenerateContent?alt=sse';
       const body = buildBody(job, userText, job.compat);
       let res;
       try {
@@ -418,8 +445,8 @@
           signal: job.controller.signal,
         });
       } catch (e) {
-        if (job.aborted) throw new AppError('停止しました。');
-        if (transient++ < 2) { setStatus(`通信エラー。再試行しています（${transient}/2）…`); await sleep(3000 * transient); continue; }
+        if (job.aborted) throw stopped();
+        if (netErrors++ < 2) { await waitWithStatus(job, 3000 * netErrors, `通信エラー。{s}秒後に再試行します（${netErrors}/2）`); continue; }
         throw new AppError('Geminiに接続できませんでした。ネットワークを確認して「続きから再開」を押してください。', { retryable: true });
       }
 
@@ -428,14 +455,16 @@
         try { const j = await res.json(); msg = (j && j.error && j.error.message) || ''; } catch (e) { /* not json */ }
         const keyProblem = /api key/i.test(msg);
         if (res.status === 400 && job.compat < 2 && !keyProblem) { job.compat++; continue; }
-        if ((res.status === 429 || res.status >= 500) && transient < 3) {
-          transient++;
-          const wait = res.status === 429 ? 20000 * transient : 4000 * transient;
-          setStatus(`混み合っています。${Math.round(wait / 1000)}秒待って再試行します（${transient}/3）…`);
-          await sleep(wait);
-          continue;
+        if (res.status === 404 && switchModel(job, `モデル「${model}」が使えないため`)) { busyRetries = 0; continue; }
+        if (res.status === 429 || res.status >= 500) {
+          if (busyRetries < 1) {
+            busyRetries++;
+            await waitWithStatus(job, res.status === 429 ? 10000 : 5000, `Geminiが混み合っています。{s}秒後に再試行します`);
+            continue;
+          }
+          if (switchModel(job, `${model} が混み合っているため`)) { busyRetries = 0; continue; }
         }
-        throw new AppError(apiErrorMessage(res.status, msg, job.model), { retryable: res.status === 429 || res.status >= 500 });
+        throw new AppError(apiErrorMessage(res.status, msg, model), { retryable: res.status === 429 || res.status >= 500 });
       }
 
       const result = { finishReason: null, blockReason: null };
@@ -447,7 +476,7 @@
         if (!data) return;
         let obj;
         try { obj = JSON.parse(data); } catch (e) { return; }
-        if (obj.error) throw new AppError(apiErrorMessage(obj.error.code || 500, obj.error.message, job.model), { retryable: true });
+        if (obj.error) throw new AppError(apiErrorMessage(obj.error.code || 500, obj.error.message, currentModel(job)), { retryable: true });
         if (obj.promptFeedback && obj.promptFeedback.blockReason) result.blockReason = obj.promptFeedback.blockReason;
         const cand = obj.candidates && obj.candidates[0];
         if (!cand) return;
@@ -470,7 +499,7 @@
         buf += decoder.decode();
         if (buf.trim()) handle(buf);
       } catch (e) {
-        if (job.aborted) throw new AppError('停止しました。');
+        if (job.aborted) throw stopped();
         if (e instanceof AppError) throw e;
         throw new AppError('受信の途中で接続が切れました。「続きから再開」を押してください。', { retryable: true });
       }
@@ -605,10 +634,11 @@
       const videoId = parseVideoId(el.url.value);
       if (!videoId) { setMsg('error', 'YouTubeの動画URLとして読み取れませんでした。URLを確認してください。'); el.url.focus(); return; }
       const opts = readOpts();
+      const chosen = (el.model.value || DEFAULT_MODEL).trim();
       job = {
         videoId, url: `https://www.youtube.com/watch?v=${videoId}`, opts, key,
-        model: (el.model.value || DEFAULT_MODEL).trim(), compat: 0,
-        committed: [], raw: '', pass: 0, passStart: 0, lastProgress: -1,
+        models: [chosen].concat(FALLBACK_MODELS.filter((m) => m !== chosen)), modelIdx: 0, compat: 0,
+        committed: [], raw: '', pass: 0, passStart: 0, lastProgress: -1, autoResumes: 0,
         duration: null, title: null, histId: Date.now(), createdAt: new Date().toISOString(),
       };
       showHeader(videoId, null);
@@ -638,7 +668,24 @@
       for (; job.pass < MAX_PASSES; job.pass++) {
         job.raw = '';
         const tail = job.pass > 0 ? segsToText(job.committed, false).slice(-160) : '';
-        const res = await streamPass(job, userPrompt(job.passStart, job.opts.windowSec, tail), (t) => { job.raw += t; queueRender(); });
+        let res;
+        try {
+          res = await streamPass(job, userPrompt(job.passStart, job.opts.windowSec, tail), (t) => { job.raw += t; queueRender(); });
+        } catch (e) {
+          // Overload or a dropped stream: keep what arrived and resume from the last paragraph by itself.
+          if (!(e instanceof AppError) || !e.retryable || job.aborted || job.autoResumes >= MAX_AUTO_RESUMES) throw e;
+          job.autoResumes++;
+          commitRaw(job);
+          rewindToLastParagraph(job);
+          job.modelIdx = 0;
+          job.compat = 0;
+          job.lastProgress = -1;
+          queueRender();
+          await waitWithStatus(job, 15000 * job.autoResumes, `Geminiが不安定なため、{s}秒後に自動で続きから再開します（${job.autoResumes}/${MAX_AUTO_RESUMES}）`);
+          // after the loop's increment: pass 0 = start over, pass >= 1 = continue from passStart
+          job.pass = job.committed.length ? Math.max(job.pass, 0) : -1;
+          continue;
+        }
 
         const sawEnd = /\[\s*END\s*\]/i.test(job.raw);
         const fresh = filterPass(parseSegments(job.raw), job.passStart, job.pass);
@@ -666,13 +713,8 @@
         job.lastProgress = last;
 
         // Next pass restarts at the beginning of the last paragraph (it may be cut off).
-        const tailSeg = job.committed[job.committed.length - 1];
-        if (job.committed.length > 1 && tailSeg.t !== null) {
-          job.committed.pop();
-          job.passStart = tailSeg.t;
-        } else {
-          job.passStart = last;
-        }
+        rewindToLastParagraph(job);
+        if (!job.committed.length) job.pass = -1;
       }
       if (job.pass >= MAX_PASSES) { outcome = 'partial'; warning = '処理回数の上限に達しました。ここまでの結果を表示しています。'; }
     } catch (e) {
@@ -680,11 +722,7 @@
       warning = e && e.message ? e.message : String(e);
       if (job.aborted) outcome = 'stopped';
     } finally {
-      // keep whatever streamed in the interrupted pass
-      if (job.raw) {
-        job.committed = job.committed.concat(filterPass(parseSegments(job.raw), job.passStart, job.pass));
-        job.raw = '';
-      }
+      commitRaw(job); // keep whatever streamed in the interrupted pass
       job.running = false;
       setRunning(false);
     }
@@ -693,7 +731,8 @@
     viewTitle = job.title || `YouTube動画（${job.videoId}）`;
     setStatus('');
     if (outcome === 'done') {
-      setMsg(warning ? 'warn' : 'info', warning || '文字起こしが完了しました。');
+      const usedFallback = job.modelIdx > 0 ? `（混雑のため ${currentModel(job)} を使用）` : '';
+      setMsg(warning ? 'warn' : 'info', warning || '文字起こしが完了しました。' + usedFallback);
       setBadge('完了');
       el.barWrap.hidden = true;
     } else {
@@ -707,15 +746,30 @@
     saveHistory(outcome === 'done' ? '完了' : '途中');
   }
 
+  function commitRaw(j) {
+    if (!j.raw) return;
+    j.committed = j.committed.concat(filterPass(parseSegments(j.raw), j.passStart, j.pass));
+    j.raw = '';
+  }
+
+  // Drops the last paragraph (it may be cut off) and sets passStart to where it began.
+  // If there is nothing to continue from, starts over from 00:00.
+  function rewindToLastParagraph(j) {
+    const last = maxT(j.committed);
+    if (last === null) { j.committed = []; j.passStart = 0; return; }
+    const tailSeg = j.committed[j.committed.length - 1];
+    if (j.committed.length > 1 && tailSeg.t !== null) { j.committed.pop(); j.passStart = tailSeg.t; }
+    else j.passStart = last;
+    if (j.passStart <= 0) { j.committed = []; j.passStart = 0; }
+  }
+
   function prepareResume() {
-    const last = maxT(job.committed);
-    if (last === null) { job.passStart = 0; job.committed = []; job.pass = 0; return; }
-    const tailSeg = job.committed[job.committed.length - 1];
-    if (job.committed.length > 1 && tailSeg.t !== null) { job.committed.pop(); job.passStart = tailSeg.t; }
-    else job.passStart = last;
-    job.pass = Math.max(1, job.pass + 1);
+    rewindToLastParagraph(job);
+    job.pass = job.committed.length ? Math.max(1, job.pass + 1) : 0;
     job.lastProgress = -1;
     job.compat = 0;
+    job.modelIdx = 0;
+    job.autoResumes = 0;
   }
 
   // ---------- history ----------
