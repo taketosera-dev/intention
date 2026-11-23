@@ -12,7 +12,7 @@ YouTubeの動画URLを貼ると、音声を全文テキストにするツール�
 1. **Gemini APIキーを作る（初回だけ）**
    [Google AI Studio](https://aistudio.google.com/apikey) で「APIキーを作成」を押してコピーします。無料で作れます。
 2. **ツールを開く**
-   `index.html` をダウンロードしてダブルクリックするか、GitHub Pagesで公開したURLを開きます（下記）。
+   下の公開URLを開きます（`index.html` をダウンロードしてダブルクリックしても使えます）。
 3. **キーを保存する（初回だけ）**
    「APIキーと詳細設定」にキーを貼って「保存」。キーはそのブラウザの中にだけ保存されます。
 4. **URLを貼って「文字起こしを始める」**
@@ -21,10 +21,11 @@ YouTubeの動画URLを貼ると、音声を全文テキストにするツール�
 「時刻を表示」にチェックを入れると、段落ごとに `[MM:SS]` が付きます（コピー・保存にも反映）。
 過去の結果は「これまでの文字起こし」に30件まで残ります（そのブラウザの中だけ）。
 
-## GitHub Pagesで公開する場合
+## 公開URL（GitHub Pages）
 
-リポジトリの Settings → Pages → Branch でこのブランチを選んで保存すると、
-`https://taketosera-dev.github.io/intention/youtube-transcriber/` で開けるようになります。
+https://taketosera-dev.github.io/intention/youtube-transcriber/
+
+`gh-pages` ブランチの `youtube-transcriber/index.html` から公開しています。ツールを直したときは、そのファイルも同じ内容に更新してください。
 URLの後ろに `?url=動画URL` を付けると、URLが入力された状態で開きます。
 
 ※ このリポジトリは公開設定です。ツールにキーなどの秘密情報は入っていません（キーは各自のブラウザに保存）。
