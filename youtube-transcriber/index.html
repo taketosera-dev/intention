@@ -179,18 +179,14 @@
             <button id="clearKey" class="ghost small danger-btn" type="button" hidden>キーを削除</button></p>
 
           <label for="model">モデル</label>
-          <input id="model" type="text" list="models" autocomplete="off">
-          <datalist id="models">
-            <option value="gemini-flash-latest">標準（速い・安い）</option>
-            <option value="gemini-pro-latest">高精度（遅い）</option>
-          </datalist>
-          <p class="hint">通常は変更不要です。「モデルが見つかりません」と出たときだけ、Google AI Studioに表示されているモデル名に変えてください。</p>
+          <input id="model" type="text" autocomplete="off" placeholder="自動（おすすめ）">
+          <p class="hint">空欄のままにしてください。このキーで使えるモデルの中から、混雑しにくい安定版を自動で選び、混雑や上限のときは次のモデルに切り替えます。特定のモデルを優先したいときだけ名前を入れます。</p>
 
           <label for="windowMin">1回あたりに書き起こす長さ</label>
           <select id="windowMin">
-            <option value="10">10分ずつ</option>
-            <option value="15" selected>15分ずつ（標準）</option>
-            <option value="20">20分ずつ</option>
+            <option value="15">15分ずつ</option>
+            <option value="30" selected>30分ずつ（標準）</option>
+            <option value="45">45分ずつ</option>
           </select>
           <p class="hint">長い動画は自動で区切って続きを取りにいきます。途中で抜けが出る場合は短くしてください。</p>
         </details>
@@ -228,7 +224,7 @@
     </section>
   </div>
 
-  <p class="foot">バージョン 2026-11-23c<br>動画のURLはGoogleのGemini APIに送られ、Google側で動画を読み込んで文字起こしします（サーバーからYouTubeをダウンロードしないため、ボット確認で止まりません）。API利用料はキーの持ち主に請求されます。無料枠ではYouTube動画は1日8時間ぶんまでです。</p>
+  <p class="foot">バージョン 2026-11-23d<br>動画のURLはGoogleのGemini APIに送られ、Google側で動画を読み込んで文字起こしします（サーバーからYouTubeをダウンロードしないため、ボット確認で止まりません）。API利用料はキーの持ち主に請求されます。無料枠ではYouTube動画は1日8時間ぶんまでです。</p>
 </div>
 <div id="yt-holder" aria-hidden="true"></div>
 
@@ -244,10 +240,11 @@
     del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
   };
 
-  const DEFAULT_MODEL = 'gemini-flash-latest';
-  // Tried in order when the chosen model is overloaded (503/429) or missing (404).
-  const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
-  const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+  // Used only when the model list cannot be fetched from the API.
+  const STATIC_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
+  const MAX_MODELS = 7;
+  const API_ROOT = 'https://generativelanguage.googleapis.com/v1beta/';
+  const API_BASE = API_ROOT + 'models/';
   const MAX_PASSES = 40;
   const MAX_AUTO_RESUMES = 3;
   const HISTORY_LIMIT = 30;
@@ -408,9 +405,93 @@
     if (status === 400) return 'リクエストが受け付けられませんでした。動画が非公開・限定公開・メンバー限定・年齢制限付きでないか確認してください。' + detail;
     if (status === 403) return 'このAPIキーでは実行できません（権限がない、またはGemini APIが無効です）。Google AI Studioでキーを確認してください。' + detail;
     if (status === 404) return `モデル「${model}」が見つかりません。「APIキーと詳細設定」のモデル名を、Google AI Studioに表示されている名前に変えてください。` + detail;
-    if (status === 429) return '利用上限に達しました（予備のモデルも含めて試しました）。無料枠ではYouTube動画は1日8時間ぶんまでです。時間をおいて「続きから再開」を押すか、Google AI Studioで課金を有効にしてください。' + detail;
-    if (status >= 500) return 'Geminiの混雑が続いています（予備のモデルも含めて自動で何度か試しました）。数分おいて「続きから再開」を押してください。' + detail;
+    if (status === 429) return 'Gemini APIの利用上限に達しました。' + detail;
+    if (status >= 500) return 'Googleのサーバー混雑が続いています（使えるモデルをすべて、何度か試しました）。数分おいて「続きから再開」を押してください。' + detail;
     return `エラーが発生しました（${status}）。` + detail;
+  }
+
+  // Reads Google's structured error: RetryInfo (how long to wait) and QuotaFailure (which limit was hit).
+  function parseApiError(json) {
+    const e = (json && json.error) || {};
+    const info = { message: e.message || '', status: e.status || '', retryMs: null, perDay: false, freeTier: false, quotaIds: [] };
+    for (const d of Array.isArray(e.details) ? e.details : []) {
+      const type = String(d['@type'] || '');
+      if (/RetryInfo/.test(type) && d.retryDelay) {
+        const s = parseFloat(String(d.retryDelay));
+        if (!isNaN(s)) info.retryMs = s * 1000;
+      }
+      if (/QuotaFailure/.test(type)) {
+        for (const v of d.violations || []) {
+          const id = String(v.quotaId || '');
+          if (id) info.quotaIds.push(id);
+          if (/PerDay/i.test(id)) info.perDay = true;
+          if (/FreeTier/i.test(id) || /free_tier/i.test(String(v.quotaMetric || ''))) info.freeTier = true;
+        }
+      }
+    }
+    if (/free[_ ]tier/i.test(info.message)) info.freeTier = true;
+    if (/per day|daily/i.test(info.message)) info.perDay = true;
+    return info;
+  }
+
+  function quotaMessage(job, info) {
+    let m = 'Gemini APIの利用上限に達しました（このキーで使えるモデルをすべて試しました）。';
+    m += info.perDay ? '\n1日あたりの上限です。日付が変わるとリセットされます。' : '\n1分あたりの上限です。1〜2分おいて「続きから再開」を押してください。';
+    if (job.freeTier) {
+      m += '\n\nこれは無料枠の上限です。Google AI Studio（aistudio.google.com）でこのAPIキーのプロジェクトに課金（請求先アカウント）を設定すると上限が大幅に上がり、この問題はほぼ起きなくなります。';
+    }
+    if (info.message) m += `\n（Geminiからのメッセージ: ${info.message}）`;
+    return m;
+  }
+
+  // ---------- model selection ----------
+  // Prefers stable (non-preview) Flash models: preview models and the "-latest" aliases that point to them
+  // have the least capacity and are the ones that answer "high demand".
+  function rankModels(names) {
+    const skip = /(tts|image|audio|live|embedding|aqa|imagen|veo|learnlm|gemma|robotics|computer-use|native|thinking)/i;
+    const seen = new Set();
+    const parsed = [];
+    for (const n of names.slice().sort((a, b) => a.length - b.length)) {
+      if (skip.test(n)) continue;
+      const m = n.match(/^gemini-(\d+(?:\.\d+)?)-(flash-lite|flash|pro)(?:-(.+))?$/);
+      if (!m) continue;
+      const suffix = m[3] || '';
+      const preview = /preview|exp/i.test(suffix);
+      if (suffix && !preview && !/^\d{3}$/.test(suffix)) continue;
+      const k = `${m[1]}-${m[2]}-${preview}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      parsed.push({ n, v: parseFloat(m[1]), tier: m[2], preview });
+    }
+    const tierRank = { flash: 0, 'flash-lite': 1, pro: 2 };
+    parsed.sort((a, b) => (a.preview - b.preview) || (tierRank[a.tier] - tierRank[b.tier]) || (b.v - a.v));
+    const stable = parsed.filter((p) => !p.preview).map((p) => p.n);
+    const preview = parsed.filter((p) => p.preview).map((p) => p.n);
+    const aliases = ['gemini-flash-latest', 'gemini-flash-lite-latest'].filter((a) => names.includes(a));
+    return stable.concat(aliases, preview);
+  }
+
+  async function listModels(job) {
+    try {
+      const res = await fetch(API_ROOT + 'models?pageSize=1000', { headers: { 'x-goog-api-key': job.key }, signal: job.controller.signal });
+      if (!res.ok) { logLine(`モデル一覧を取得できませんでした（${res.status}）。既定の候補で続けます`); return null; }
+      const j = await res.json();
+      return (j.models || [])
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m) => String(m.name || '').replace(/^models\//, ''));
+    } catch (e) {
+      if (job.aborted) throw stopped();
+      logLine('モデル一覧を取得できませんでした（通信エラー）。既定の候補で続けます');
+      return null;
+    }
+  }
+
+  async function resolveModels(job, chosen) {
+    const names = await listModels(job);
+    let list = names ? rankModels(names) : [];
+    if (!list.length) list = STATIC_MODELS.slice();
+    if (chosen) list = [chosen].concat(list.filter((m) => m !== chosen));
+    return list.slice(0, MAX_MODELS);
   }
 
   function finishMessage(reason) {
@@ -439,9 +520,16 @@
 
   function currentModel(job) { return job.models[job.modelIdx]; }
 
+  // Index of the first model at or after `from` that has not hit its daily limit; -1 if none.
+  function usableFrom(job, from) {
+    for (let i = from; i < job.models.length; i++) if (!job.exhausted[job.models[i]]) return i;
+    return -1;
+  }
+
   function switchModel(job, reason) {
-    if (job.modelIdx + 1 >= job.models.length) return false;
-    job.modelIdx++;
+    const next = usableFrom(job, job.modelIdx + 1);
+    if (next < 0) return false;
+    job.modelIdx = next;
     job.compat = 0;
     setStatus(`・${reason}、${currentModel(job)} に切り替えて続けます…`);
     logLine(`モデル切替: ${reason} → ${currentModel(job)}`);
@@ -454,6 +542,11 @@
     let busyRetries = 0; // retries on the current model
     for (;;) {
       if (job.aborted) throw stopped();
+      if (job.exhausted[currentModel(job)]) {
+        const i = usableFrom(job, 0);
+        if (i < 0) throw new AppError(quotaMessage(job, { perDay: true, message: '' }));
+        job.modelIdx = i;
+      }
       const model = currentModel(job);
       const endpoint = API_BASE + encodeURIComponent(model) + ':streamGenerateContent?alt=sse';
       const body = buildBody(job, userText, job.compat);
@@ -474,21 +567,40 @@
       }
 
       if (!res.ok) {
-        let msg = '';
-        try { const j = await res.json(); msg = (j && j.error && j.error.message) || ''; } catch (e) { /* not json */ }
-        logLine(`← エラー ${res.status}: ${msg || res.statusText || '(説明なし)'}`);
+        let json = null;
+        try { json = await res.json(); } catch (e) { /* not json */ }
+        const info = parseApiError(json);
+        const msg = info.message;
+        logLine(`← エラー ${res.status}${info.status ? ' ' + info.status : ''}: ${msg || res.statusText || '(説明なし)'}` +
+          (info.quotaIds.length ? `／上限の種類 ${info.quotaIds.join(', ')}` : '') +
+          (info.retryMs ? `／Googleの指定待ち時間 ${Math.round(info.retryMs / 1000)}秒` : ''));
         const keyProblem = /api key/i.test(msg);
         if (res.status === 400 && job.compat < 2 && !keyProblem) { job.compat++; continue; }
         if (res.status === 404 && switchModel(job, `モデル「${model}」が使えないため`)) { busyRetries = 0; continue; }
-        if (res.status === 429 || res.status >= 500) {
+
+        if (res.status === 429) {
+          // A usage limit, not congestion: per-day limits never clear by waiting, per-minute ones clear after retryDelay.
+          if (info.freeTier) job.freeTier = true;
+          if (info.perDay) job.exhausted[model] = true;
+          if (info.perDay || busyRetries >= 1) {
+            if (switchModel(job, info.perDay ? `${model} は1日の上限に達したため` : `${model} は上限に達したため`)) { busyRetries = 0; continue; }
+            throw new AppError(quotaMessage(job, info), { retryable: !info.perDay });
+          }
+          busyRetries++;
+          const wait = Math.min(Math.max(info.retryMs || 30000, 3000), 90000);
+          await waitWithStatus(job, wait, `${model} が1分あたりの利用上限に達しました。Googleの指定どおり{s}秒待って再試行します`);
+          continue;
+        }
+
+        if (res.status >= 500) {
           if (busyRetries < 1) {
             busyRetries++;
-            await waitWithStatus(job, res.status === 429 ? 10000 : 5000, `Geminiが混み合っています。{s}秒後に再試行します`);
+            await waitWithStatus(job, Math.min(Math.max(info.retryMs || 5000, 3000), 60000), `Googleのサーバーが混雑しています（${model}）。{s}秒後に再試行します`);
             continue;
           }
-          if (switchModel(job, `${model} が混み合っているため`)) { busyRetries = 0; continue; }
+          if (switchModel(job, `${model} が混雑しているため`)) { busyRetries = 0; continue; }
         }
-        throw new AppError(apiErrorMessage(res.status, msg, model), { retryable: res.status === 429 || res.status >= 500 });
+        throw new AppError(apiErrorMessage(res.status, msg, model), { retryable: res.status >= 500 });
       }
 
       const result = { finishReason: null, blockReason: null };
@@ -609,6 +721,7 @@
       const last = maxT(segs);
       const parts = [];
       parts.push(`${job.pass + 1}回目（${fmt(job.passStart)}〜）を処理中`);
+      if (job.models) parts.push(currentModel(job));
       if (last !== null) parts.push(job.duration ? `${fmt(last)} / ${fmt(job.duration)}` : `${fmt(last)} まで`);
       setStatus('・' + parts.join('・'));
       if (job.duration && last !== null) {
@@ -664,10 +777,9 @@
       const videoId = parseVideoId(el.url.value);
       if (!videoId) { setMsg('error', 'YouTubeの動画URLとして読み取れませんでした。URLを確認してください。'); el.url.focus(); return; }
       const opts = readOpts();
-      const chosen = (el.model.value || DEFAULT_MODEL).trim();
       job = {
         videoId, url: `https://www.youtube.com/watch?v=${videoId}`, opts, key,
-        models: [chosen].concat(FALLBACK_MODELS.filter((m) => m !== chosen)), modelIdx: 0, compat: 0,
+        chosenModel: el.model.value.trim(), models: null, modelIdx: 0, compat: 0, exhausted: {}, freeTier: false,
         committed: [], raw: '', pass: 0, passStart: 0, lastProgress: -1, autoResumes: 0,
         duration: null, title: null, histId: Date.now(), createdAt: new Date().toISOString(),
       };
@@ -675,7 +787,7 @@
       el.barWrap.hidden = true;
       el.bar.style.width = '0';
       clearLog();
-      logLine(`開始 ${job.url}／モデルの順番: ${job.models.join(' → ')}`);
+      logLine(`開始 ${job.url}`);
       getVideoInfo(videoId).then((info) => {
         if (!job || job.videoId !== videoId) return;
         logLine(info && info.duration ? `動画の長さ ${fmt(info.duration)}` : '動画の長さは取得できず（文字起こしは続行）');
@@ -701,6 +813,11 @@
     let outcome = 'done';
     let warning = null;
     try {
+      if (!job.models) {
+        setStatus('・このキーで使えるモデルを確認しています…');
+        job.models = await resolveModels(job, job.chosenModel);
+        logLine(`使うモデルの順番: ${job.models.join(' → ')}`);
+      }
       for (; job.pass < MAX_PASSES; job.pass++) {
         job.raw = '';
         const tail = job.pass > 0 ? segsToText(job.committed, false).slice(-160) : '';
@@ -714,7 +831,7 @@
           logLine(`自動で再開します ${job.autoResumes}/${MAX_AUTO_RESUMES}`);
           commitRaw(job);
           rewindToLastParagraph(job);
-          job.modelIdx = 0;
+          job.modelIdx = Math.max(0, usableFrom(job, 0));
           job.compat = 0;
           job.lastProgress = -1;
           queueRender();
@@ -770,8 +887,7 @@
     setStatus('');
     logLine(`終了: ${{ done: '完了', partial: '途中で終了', error: 'エラー', stopped: '停止' }[outcome]}${warning ? '／' + warning.split('\n')[0] : ''}`);
     if (outcome === 'done') {
-      const usedFallback = job.modelIdx > 0 ? `（混雑のため ${currentModel(job)} を使用）` : '';
-      setMsg(warning ? 'warn' : 'info', warning || '文字起こしが完了しました。' + usedFallback);
+      setMsg(warning ? 'warn' : 'info', warning || `文字起こしが完了しました（使用モデル: ${currentModel(job)}）。`);
       setBadge('完了');
       el.barWrap.hidden = true;
     } else {
@@ -808,6 +924,7 @@
     job.lastProgress = -1;
     job.compat = 0;
     job.modelIdx = 0;
+    job.exhausted = {}; // the user chose to try again, possibly after the daily reset
     job.autoResumes = 0;
   }
 
@@ -907,7 +1024,7 @@
     setMsg('info', 'APIキーを保存しました。');
   });
   el.clearKey.addEventListener('click', () => { store.del(LS.key); refreshKeyState(); });
-  el.model.addEventListener('change', () => store.set(LS.model, el.model.value.trim() || DEFAULT_MODEL));
+  el.model.addEventListener('change', () => store.set(LS.model, el.model.value.trim()));
   for (const s of [el.lang, el.style, el.windowMin]) {
     s.addEventListener('change', () => store.set(LS.opts, JSON.stringify({ lang: el.lang.value, style: el.style.value, windowMin: el.windowMin.value })));
   }
@@ -920,7 +1037,9 @@
   el.save.addEventListener('click', saveTxt);
 
   // ---------- init ----------
-  el.model.value = store.get(LS.model, DEFAULT_MODEL);
+  // the earlier version's default ("gemini-flash-latest") now means "automatic"
+  const savedModel = store.get(LS.model, '');
+  el.model.value = savedModel === 'gemini-flash-latest' ? '' : savedModel;
   try {
     const o = JSON.parse(store.get(LS.opts, '{}'));
     if (o.lang) el.lang.value = o.lang;
@@ -935,7 +1054,7 @@
   renderHistory();
 
   // exposed for automated tests only
-  window.__ytt = { parseVideoId, parseSegments, fmt, userPrompt, buildBody };
+  window.__ytt = { parseVideoId, parseSegments, fmt, userPrompt, buildBody, rankModels, parseApiError };
 })();
 </script>
 </body>
