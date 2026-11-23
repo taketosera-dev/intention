@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube文字起こし</title>
+<meta name="description" content="YouTubeの動画URLを貼るだけで、音声を全文テキストにします。Gemini APIを使用。">
+<style>
+  :root {
+    --bg: #f6f6f1;
+    --card: #ffffff;
+    --ink: #1f2a24;
+    --muted: #66706a;
+    --line: #e3e5de;
+    --accent: #2c5446;
+    --accent-ink: #ffffff;
+    --accent-soft: #e8f0eb;
+    --field: #fbfbf8;
+    --danger: #a8322d;
+    --danger-soft: #fbecea;
+    --warn: #8a5a00;
+    --warn-soft: #fdf3dc;
+    --ok: #2d6a4f;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141816;
+      --card: #1c211e;
+      --ink: #e7ece8;
+      --muted: #9aa59e;
+      --line: #2e3531;
+      --accent: #7fbfa3;
+      --accent-ink: #10231b;
+      --accent-soft: #23302a;
+      --field: #171b19;
+      --danger: #f0928b;
+      --danger-soft: #3a2422;
+      --warn: #f2c46b;
+      --warn-soft: #3a3020;
+      --ok: #8fd1b0;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141816; --card: #1c211e; --ink: #e7ece8; --muted: #9aa59e; --line: #2e3531;
+    --accent: #7fbfa3; --accent-ink: #10231b; --accent-soft: #23302a; --field: #171b19;
+    --danger: #f0928b; --danger-soft: #3a2422; --warn: #f2c46b; --warn-soft: #3a3020; --ok: #8fd1b0; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", Meiryo, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: .02em; }
+  header p { margin: 0 0 24px; color: var(--muted); }
+  .grid {
+    display: grid; gap: 24px; align-items: start;
+    grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
+    grid-template-areas: "input output" "hist output";
+    grid-template-rows: auto 1fr;
+  }
+  .area-input { grid-area: input; }
+  .area-output { grid-area: output; }
+  .area-hist { grid-area: hist; }
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "input" "output" "hist"; grid-template-rows: auto; }
+  }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; box-shadow: var(--shadow); }
+  @media (max-width: 520px) { .card { padding: 20px 16px; } }
+  h2 { font-size: 18px; margin: 0 0 16px; }
+  label { display: block; font-size: 14px; margin: 16px 0 6px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--field); color: var(--ink); font: inherit;
+  }
+  input:focus, select:focus, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > input { flex: 1 1 160px; min-width: 0; }
+  button {
+    font: inherit; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    padding: 9px 14px; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .primary { width: 100%; margin-top: 20px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 14px 16px; font-weight: 600; }
+  .ghost { background: transparent; }
+  .small { padding: 6px 10px; font-size: 13px; }
+  .danger-btn { color: var(--danger); }
+  details { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .keystate { font-size: 13px; color: var(--ok); }
+  .keystate.missing { color: var(--warn); }
+  .out-head { display: flex; gap: 16px; align-items: flex-start; }
+  .thumb { width: 160px; aspect-ratio: 16 / 9; border-radius: 10px; object-fit: cover; background: var(--accent-soft); flex: 0 0 auto; }
+  @media (max-width: 520px) { .thumb { width: 104px; } }
+  .eyebrow { font-size: 12px; letter-spacing: .18em; color: var(--muted); text-transform: uppercase; }
+  .title { font-size: 20px; font-weight: 700; margin: 2px 0 4px; word-break: break-word; }
+  .meta { font-size: 13px; color: var(--muted); }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: middle; }
+  .bar { height: 6px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; margin: 14px 0 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .msg { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; white-space: pre-wrap; }
+  .msg.error { background: var(--danger-soft); color: var(--danger); }
+  .msg.warn { background: var(--warn-soft); color: var(--warn); }
+  .msg.info { background: var(--accent-soft); color: var(--accent); }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 0; align-items: center; }
+  .tools .spacer { flex: 1 1 auto; }
+  .check { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); margin: 0; }
+  .transcript {
+    margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px;
+    white-space: pre-wrap; word-break: break-word; min-height: 200px; max-height: 70vh; overflow: auto;
+    font-size: 15.5px; line-height: 1.9;
+  }
+  .transcript:empty::before { content: attr(data-empty); color: var(--muted); }
+  .hist { list-style: none; margin: 0; padding: 0; }
+  .hist li { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .hist li:first-child { border-top: 0; }
+  .hist .h-main { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; text-align: left; padding: 0; }
+  .hist .h-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+  .hist .h-sub { display: block; font-size: 12px; color: var(--muted); }
+  .hist-head { display: flex; justify-content: space-between; align-items: baseline; }
+  #yt-holder { position: absolute; left: -10000px; top: 0; width: 320px; height: 180px; overflow: hidden; }
+  .foot { margin-top: 24px; font-size: 12.5px; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>YouTube文字起こし</h1>
+    <p>動画のURLを貼ると、音声を全文テキストにします。コピーしてそのまま台本シートに貼れます。</p>
+  </header>
+
+  <div class="grid">
+      <section class="card area-input" aria-labelledby="new-h">
+        <h2 id="new-h">新しい文字起こし</h2>
+
+        <label for="url">動画のURL</label>
+        <input id="url" type="text" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=...">
+        <p class="hint">通常の動画・Shorts・youtu.be・ライブのアーカイブに対応。公開動画のみ。</p>
+
+        <label for="lang">音声の言語</label>
+        <select id="lang">
+          <option value="ja">日本語</option>
+          <option value="en">英語</option>
+          <option value="auto">自動（話されている言語のまま）</option>
+        </select>
+
+        <label for="style">書き起こし方</label>
+        <select id="style">
+          <option value="clean">読みやすく整える（「えー」「あのー」などを省く）</option>
+          <option value="verbatim">話した通り（言い淀みも残す）</option>
+        </select>
+
+        <button id="start" class="primary" type="button">文字起こしを始める</button>
+        <div class="row" style="margin-top:8px">
+          <button id="stop" class="ghost small" type="button" disabled>停止</button>
+          <button id="resume" class="ghost small" type="button" hidden>続きから再開</button>
+        </div>
+
+        <details id="settings">
+          <summary>APIキーと詳細設定</summary>
+          <label for="key">Gemini APIキー</label>
+          <div class="row">
+            <input id="key" type="password" autocomplete="off" placeholder="AIza...">
+            <button id="saveKey" class="small" type="button">保存</button>
+          </div>
+          <p class="hint"><span id="keyState" class="keystate missing">未設定</span>　キーは<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>で無料で作れます。このブラウザの中にだけ保存されます。
+            <button id="clearKey" class="ghost small danger-btn" type="button" hidden>キーを削除</button></p>
+
+          <label for="model">モデル</label>
+          <input id="model" type="text" list="models" autocomplete="off">
+          <datalist id="models">
+            <option value="gemini-flash-latest">標準（速い・安い）</option>
+            <option value="gemini-pro-latest">高精度（遅い）</option>
+          </datalist>
+          <p class="hint">通常は変更不要です。「モデルが見つかりません」と出たときだけ、Google AI Studioに表示されているモデル名に変えてください。</p>
+
+          <label for="windowMin">1回あたりに書き起こす長さ</label>
+          <select id="windowMin">
+            <option value="10">10分ずつ</option>
+            <option value="15" selected>15分ずつ（標準）</option>
+            <option value="20">20分ずつ</option>
+          </select>
+          <p class="hint">長い動画は自動で区切って続きを取りにいきます。途中で抜けが出る場合は短くしてください。</p>
+        </details>
+      </section>
+
+      <section class="card area-hist" aria-labelledby="hist-h">
+        <div class="hist-head"><h2 id="hist-h">これまでの文字起こし</h2><span id="histCount" class="meta"></span></div>
+        <ul id="hist" class="hist"></ul>
+        <p id="histEmpty" class="hint">まだありません。</p>
+      </section>
+
+    <section class="card area-output" aria-labelledby="out-title" aria-live="polite">
+      <div class="out-head">
+        <img id="thumb" class="thumb" alt="" hidden onerror="this.hidden=true">
+        <div style="min-width:0;flex:1">
+          <div class="eyebrow">Transcript</div>
+          <div id="out-title" class="title">まだ文字起こしはありません</div>
+          <div class="meta"><span id="chars">0文字</span><span id="prog"></span><span id="badge" class="badge" hidden></span></div>
+        </div>
+      </div>
+      <div id="barWrap" class="bar" hidden><div id="bar"></div></div>
+      <div id="msg" class="msg" hidden></div>
+
+      <div class="tools">
+        <button id="copy" class="small" type="button" disabled>コピー</button>
+        <button id="save" class="small" type="button" disabled>TXT保存</button>
+        <label class="check"><input id="showTs" type="checkbox"> 時刻を表示</label>
+        <span class="spacer"></span>
+      </div>
+      <div id="out" class="transcript" data-empty="動画のURLを入れて「文字起こしを始める」を押すと、ここに全文が表示されます。"></div>
+    </section>
+  </div>
+
+  <p class="foot">動画のURLはGoogleのGemini APIに送られ、Google側で動画を読み込んで文字起こしします（サーバーからYouTubeをダウンロードしないため、ボット確認で止まりません）。API利用料はキーの持ち主に請求されます。無料枠ではYouTube動画は1日8時間ぶんまでです。</p>
+</div>
+<div id="yt-holder" aria-hidden="true"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- storage (every access guarded: storage can be unavailable) ----------
+  const LS = { key: 'ytt.apiKey', model: 'ytt.model', hist: 'ytt.history', opts: 'ytt.opts' };
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
+  };
+
+  const DEFAULT_MODEL = 'gemini-flash-latest';
+  const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+  const MAX_PASSES = 40;
+  const HISTORY_LIMIT = 30;
+
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    url: $('url'), lang: $('lang'), style: $('style'), start: $('start'), stop: $('stop'), resume: $('resume'),
+    key: $('key'), saveKey: $('saveKey'), clearKey: $('clearKey'), keyState: $('keyState'), settings: $('settings'),
+    model: $('model'), windowMin: $('windowMin'),
+    thumb: $('thumb'), title: $('out-title'), chars: $('chars'), prog: $('prog'), badge: $('badge'),
+    barWrap: $('barWrap'), bar: $('bar'), msg: $('msg'), copy: $('copy'), save: $('save'), showTs: $('showTs'), out: $('out'),
+    hist: $('hist'), histEmpty: $('histEmpty'), histCount: $('histCount'),
+  };
+
+  // ---------- pure helpers ----------
+  function parseVideoId(input) {
+    const s = String(input || '').trim();
+    if (/^[\w-]{11}$/.test(s)) return s;
+    let u;
+    try { u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s); } catch (e) { return null; }
+    const host = u.hostname.toLowerCase().replace(/^(www|m|music)\./, '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/')[1] || '';
+      return /^[\w-]{11}$/.test(id) ? id : null;
+    }
+    if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      const v = u.searchParams.get('v');
+      if (v && /^[\w-]{11}$/.test(v)) return v;
+      const m = u.pathname.match(/^\/(?:shorts|live|embed|v|e)\/([\w-]{11})(?:[/?#]|$)/);
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    const p = (n) => String(n).padStart(2, '0');
+    return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+  }
+
+  const TS_RE = /^\s*[\[【(（]\s*((?:\d{1,2}:)?\d{1,2}:\d{2})\s*[\]】)）]\s*/;
+  const END_RE = /\[\s*END\s*\]/gi;
+
+  function tsToSec(str) {
+    return str.split(':').map(Number).reduce((a, b) => a * 60 + b, 0);
+  }
+
+  // Splits model output into paragraphs that start with [MM:SS] / [H:MM:SS].
+  function parseSegments(raw) {
+    const segs = [];
+    let cur = null;
+    for (const rawLine of String(raw).replace(/\r/g, '').split('\n')) {
+      const line = rawLine.replace(END_RE, '');
+      const m = line.match(TS_RE);
+      if (m) {
+        cur = { t: tsToSec(m[1]), text: line.slice(m[0].length).trim() };
+        segs.push(cur);
+        continue;
+      }
+      const t = line.trim();
+      if (!t) continue;
+      if (!cur) { cur = { t: null, text: '' }; segs.push(cur); }
+      cur.text = cur.text ? cur.text + '\n' + t : t;
+    }
+    return segs.filter((s) => s.text);
+  }
+
+  function maxT(segs) {
+    let v = null;
+    for (const s of segs) if (s.t !== null && (v === null || s.t > v)) v = s.t;
+    return v;
+  }
+
+  function segsToText(segs, withTs) {
+    return segs.map((s) => (withTs && s.t !== null ? `[${fmt(s.t)}] ` : '') + s.text).join('\n');
+  }
+
+  function countChars(segs) {
+    return segs.reduce((n, s) => n + s.text.replace(/\s/g, '').length, 0);
+  }
+
+  // ---------- prompt ----------
+  const LANG_TEXT = {
+    ja: '音声は主に日本語です。日本語で書き起こしてください。',
+    en: '音声は主に英語です。英語のまま書き起こしてください（翻訳しない）。',
+    auto: '話されている言語のまま書き起こしてください（翻訳しない）。',
+  };
+  const STYLE_TEXT = {
+    clean: '「えー」「あのー」などのフィラーや言い直しは省いて読みやすく整える。ただし内容・言い回し・語尾は変えず、要約や省略はしない。',
+    verbatim: 'フィラーや言い直しも含め、話した通りに一語ずつ書く。',
+  };
+
+  function systemPrompt(opts) {
+    return [
+      'あなたはプロの文字起こし担当者です。与えられたYouTube動画の音声を書き起こします。',
+      '守ること:',
+      '- 話されている内容はすべて書く。要約・省略・言い換え・翻訳はしない。',
+      '- ' + STYLE_TEXT[opts.style],
+      '- ' + LANG_TEXT[opts.lang],
+      '- 句読点を付け、意味のまとまり（およそ20〜60秒）ごとに段落を分けて改行する。',
+      '- 各段落の行頭に、その段落を話し始めた時刻を [MM:SS] の形で付ける（1時間以上は [H:MM:SS]）。時刻は動画の先頭からの経過時間。',
+      '- 話者が入れ替わったら段落を分ける。話者名は付けない。',
+      '- BGM・効果音・画面の文字の説明は書かない。話していない区間は書かない。',
+      '- 前置き・見出し・説明・感想は一切書かず、書き起こし本文だけを出力する。',
+      '- 動画の最後まで書き終えたときだけ、最終行に [END] とだけ書く。',
+    ].join('\n');
+  }
+
+  function userPrompt(start, windowSec, tail) {
+    const end = start + windowSec;
+    if (start <= 0) {
+      return `この動画の音声を、最初（00:00）から書き起こしてください。${fmt(end)} 付近まで書いたら、段落の区切りで止めてください。それより前に動画が終わる場合は最後まで書き、最終行に [END] と書いてください。`;
+    }
+    let p = `この動画の ${fmt(start)} 以降の音声を書き起こしてください。${fmt(start)} より前の部分は書かないでください。` +
+      `${fmt(start)} から書き始め、${fmt(end)} 付近まで書いたら、段落の区切りで止めてください。それより前に動画が終わる場合は最後まで書き、最終行に [END] と書いてください。`;
+    if (tail) p += `\n\n参考：直前の区間は次の文で終わっています。ここは繰り返さず、続きから書いてください。\n「${tail}」`;
+    return p;
+  }
+
+  // compat level: 0 = full config, 1 = without thinking/fps, 2 = bare request
+  function buildBody(job, userText, compat) {
+    const video = { fileData: { fileUri: job.url } };
+    const body = {
+      systemInstruction: { parts: [{ text: systemPrompt(job.opts) }] },
+      contents: [{ role: 'user', parts: [video, { text: userText }] }],
+    };
+    if (compat <= 1) body.generationConfig = { maxOutputTokens: 65536, mediaResolution: 'MEDIA_RESOLUTION_LOW' };
+    if (compat === 0) {
+      video.videoMetadata = { fps: 0.2 };
+      body.generationConfig.thinkingConfig = { thinkingLevel: 'low' };
+    }
+    return body;
+  }
+
+  // ---------- errors ----------
+  class AppError extends Error {
+    constructor(message, opts) { super(message); this.retryable = !!(opts && opts.retryable); }
+  }
+
+  function apiErrorMessage(status, msg, model) {
+    const detail = msg ? `\n（Geminiからのメッセージ: ${msg}）` : '';
+    if (/api key not valid|API_KEY_INVALID|api key expired/i.test(msg || '')) return 'APIキーが正しくないか、期限切れです。「APIキーと詳細設定」からキーを入れ直してください。' + detail;
+    if (status === 400) return 'リクエストが受け付けられませんでした。動画が非公開・限定公開・メンバー限定・年齢制限付きでないか確認してください。' + detail;
+    if (status === 403) return 'このAPIキーでは実行できません（権限がない、またはGemini APIが無効です）。Google AI Studioでキーを確認してください。' + detail;
+    if (status === 404) return `モデル「${model}」が見つかりません。「APIキーと詳細設定」のモデル名を、Google AI Studioに表示されている名前に変えてください。` + detail;
+    if (status === 429) return '利用上限に達しました。無料枠ではYouTube動画は1日8時間ぶんまでです。時間をおいて「続きから再開」を押すか、Google AI Studioで課金を有効にしてください。' + detail;
+    if (status >= 500) return 'Gemini側で一時的なエラーが起きました。少し待って「続きから再開」を押してください。' + detail;
+    return `エラーが発生しました（${status}）。` + detail;
+  }
+
+  function finishMessage(reason) {
+    switch (reason) {
+      case 'SAFETY': case 'PROHIBITED_CONTENT': case 'BLOCKLIST': case 'SPII':
+        return 'Geminiの安全フィルタで止まりました。この動画は自動の文字起こしができません。';
+      case 'RECITATION':
+        return '著作物（歌詞など）の再現と判定されて止まりました。音楽が中心の動画は書き起こせないことがあります。';
+      default:
+        return null;
+    }
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ---------- Gemini streaming call ----------
+  async function streamPass(job, userText, onText) {
+    const endpoint = API_BASE + encodeURIComponent(job.model) + ':streamGenerateContent?alt=sse';
+    let transient = 0;
+    for (;;) {
+      if (job.aborted) throw new AppError('停止しました。');
+      const body = buildBody(job, userText, job.compat);
+      let res;
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': job.key },
+          body: JSON.stringify(body),
+          signal: job.controller.signal,
+        });
+      } catch (e) {
+        if (job.aborted) throw new AppError('停止しました。');
+        if (transient++ < 2) { setStatus(`通信エラー。再試行しています（${transient}/2）…`); await sleep(3000 * transient); continue; }
+        throw new AppError('Geminiに接続できませんでした。ネットワークを確認して「続きから再開」を押してください。', { retryable: true });
+      }
+
+      if (!res.ok) {
+        let msg = '';
+        try { const j = await res.json(); msg = (j && j.error && j.error.message) || ''; } catch (e) { /* not json */ }
+        const keyProblem = /api key/i.test(msg);
+        if (res.status === 400 && job.compat < 2 && !keyProblem) { job.compat++; continue; }
+        if ((res.status === 429 || res.status >= 500) && transient < 3) {
+          transient++;
+          const wait = res.status === 429 ? 20000 * transient : 4000 * transient;
+          setStatus(`混み合っています。${Math.round(wait / 1000)}秒待って再試行します（${transient}/3）…`);
+          await sleep(wait);
+          continue;
+        }
+        throw new AppError(apiErrorMessage(res.status, msg, job.model), { retryable: res.status === 429 || res.status >= 500 });
+      }
+
+      const result = { finishReason: null, blockReason: null };
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      const handle = (evt) => {
+        const data = evt.split(/\r?\n/).filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+        if (!data) return;
+        let obj;
+        try { obj = JSON.parse(data); } catch (e) { return; }
+        if (obj.error) throw new AppError(apiErrorMessage(obj.error.code || 500, obj.error.message, job.model), { retryable: true });
+        if (obj.promptFeedback && obj.promptFeedback.blockReason) result.blockReason = obj.promptFeedback.blockReason;
+        const cand = obj.candidates && obj.candidates[0];
+        if (!cand) return;
+        const parts = (cand.content && cand.content.parts) || [];
+        const text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('');
+        if (text) onText(text);
+        if (cand.finishReason) result.finishReason = cand.finishReason;
+      };
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let m;
+          while ((m = buf.match(/\r?\n\r?\n/))) {
+            handle(buf.slice(0, m.index));
+            buf = buf.slice(m.index + m[0].length);
+          }
+        }
+        buf += decoder.decode();
+        if (buf.trim()) handle(buf);
+      } catch (e) {
+        if (job.aborted) throw new AppError('停止しました。');
+        if (e instanceof AppError) throw e;
+        throw new AppError('受信の途中で接続が切れました。「続きから再開」を押してください。', { retryable: true });
+      }
+      return result;
+    }
+  }
+
+  // ---------- video info (best effort, via the YouTube IFrame API) ----------
+  let ytApiPromise = null;
+  function loadYouTubeApi() {
+    if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
+    if (ytApiPromise) return ytApiPromise;
+    ytApiPromise = new Promise((resolve, reject) => {
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => { if (prev) prev(); resolve(window.YT); };
+      const s = document.createElement('script');
+      s.src = 'https://www.youtube.com/iframe_api';
+      s.onerror = () => reject(new Error('iframe api failed'));
+      document.head.appendChild(s);
+      setTimeout(() => reject(new Error('iframe api timeout')), 8000);
+    }).catch((e) => { ytApiPromise = null; throw e; });
+    return ytApiPromise;
+  }
+
+  async function getVideoInfo(videoId) {
+    try {
+      const YT = await loadYouTubeApi();
+      return await new Promise((resolve) => {
+        const holder = $('yt-holder');
+        holder.innerHTML = '<div id="yt-player"></div>';
+        let settled = false;
+        const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+        // eslint-disable-next-line no-new
+        new YT.Player('yt-player', {
+          videoId, width: 320, height: 180, playerVars: { controls: 0, playsinline: 1 },
+          events: {
+            onReady: (e) => {
+              const d = e.target.getDuration ? e.target.getDuration() : 0;
+              const vd = e.target.getVideoData ? e.target.getVideoData() : {};
+              finish({ duration: d > 0 ? d : null, title: (vd && vd.title) || null });
+            },
+            onError: () => finish(null),
+          },
+        });
+        setTimeout(() => finish(null), 8000);
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ---------- UI state ----------
+  let job = null;          // running or last job
+  let viewSegs = [];       // segments currently shown
+  let viewTitle = '';
+  let renderQueued = false;
+
+  function setMsg(kind, text) {
+    if (!text) { el.msg.hidden = true; el.msg.textContent = ''; return; }
+    el.msg.hidden = false;
+    el.msg.className = 'msg ' + kind;
+    el.msg.textContent = text;
+  }
+  function setStatus(text) { el.prog.textContent = text ? '　' + text : ''; }
+  function setBadge(text) { el.badge.hidden = !text; el.badge.textContent = text || ''; }
+
+  function render() {
+    renderQueued = false;
+    const segs = job && job.running ? liveSegments(job) : viewSegs;
+    const text = segsToText(segs, el.showTs.checked);
+    el.out.textContent = text;
+    el.chars.textContent = countChars(segs).toLocaleString('ja-JP') + '文字';
+    const has = segs.length > 0;
+    el.copy.disabled = !has;
+    el.save.disabled = !has;
+    if (job && job.running) {
+      const last = maxT(segs);
+      const parts = [];
+      parts.push(`${job.pass + 1}回目（${fmt(job.passStart)}〜）を処理中`);
+      if (last !== null) parts.push(job.duration ? `${fmt(last)} / ${fmt(job.duration)}` : `${fmt(last)} まで`);
+      setStatus('・' + parts.join('・'));
+      if (job.duration && last !== null) {
+        el.barWrap.hidden = false;
+        el.bar.style.width = Math.min(100, (last / job.duration) * 100).toFixed(1) + '%';
+      }
+      // keep the newest text in view while streaming
+      el.out.scrollTop = el.out.scrollHeight;
+    }
+  }
+  function queueRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(render);
+  }
+
+  function liveSegments(j) {
+    const fresh = filterPass(parseSegments(j.raw), j.passStart, j.pass);
+    return j.committed.concat(fresh);
+  }
+  function filterPass(segs, start, pass) {
+    if (pass === 0) return segs;
+    return segs.filter((s) => s.t === null || s.t >= start - 2);
+  }
+
+  function setRunning(on) {
+    el.start.disabled = on;
+    el.stop.disabled = !on;
+    el.url.disabled = on;
+    if (on) el.resume.hidden = true;
+  }
+
+  function readOpts() {
+    return { lang: el.lang.value, style: el.style.value, windowSec: Number(el.windowMin.value) * 60 };
+  }
+
+  function showHeader(videoId, title) {
+    el.thumb.src = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+    el.thumb.hidden = false;
+    el.title.textContent = title || `YouTube動画（${videoId}）`;
+  }
+
+  // ---------- main flow ----------
+  async function start(resume) {
+    const key = store.get(LS.key, '') || el.key.value.trim();
+    if (!key) {
+      el.settings.open = true;
+      el.key.focus();
+      setMsg('error', 'Gemini APIキーを入れて「保存」を押してください。キーはGoogle AI Studioで無料で作れます。');
+      return;
+    }
+    if (!resume) {
+      const videoId = parseVideoId(el.url.value);
+      if (!videoId) { setMsg('error', 'YouTubeの動画URLとして読み取れませんでした。URLを確認してください。'); el.url.focus(); return; }
+      const opts = readOpts();
+      job = {
+        videoId, url: `https://www.youtube.com/watch?v=${videoId}`, opts, key,
+        model: (el.model.value || DEFAULT_MODEL).trim(), compat: 0,
+        committed: [], raw: '', pass: 0, passStart: 0, lastProgress: -1,
+        duration: null, title: null, histId: Date.now(), createdAt: new Date().toISOString(),
+      };
+      showHeader(videoId, null);
+      el.barWrap.hidden = true;
+      el.bar.style.width = '0';
+      getVideoInfo(videoId).then((info) => {
+        if (!info || !job || job.videoId !== videoId) return;
+        if (info.duration) job.duration = info.duration;
+        if (info.title) { job.title = info.title; el.title.textContent = info.title; }
+        queueRender();
+      });
+    } else if (!job) {
+      return;
+    }
+    job.key = key;
+    job.running = true;
+    job.aborted = false;
+    job.controller = new AbortController();
+    setRunning(true);
+    setMsg('info', '文字起こし中です。長い動画は数分かかります。このページを開いたままにしてください。');
+    setBadge('処理中');
+    queueRender();
+
+    let outcome = 'done';
+    let warning = null;
+    try {
+      for (; job.pass < MAX_PASSES; job.pass++) {
+        job.raw = '';
+        const tail = job.pass > 0 ? segsToText(job.committed, false).slice(-160) : '';
+        const res = await streamPass(job, userPrompt(job.passStart, job.opts.windowSec, tail), (t) => { job.raw += t; queueRender(); });
+
+        const sawEnd = /\[\s*END\s*\]/i.test(job.raw);
+        const fresh = filterPass(parseSegments(job.raw), job.passStart, job.pass);
+        job.committed = job.committed.concat(fresh);
+        job.raw = '';
+        queueRender();
+
+        const stopMsg = res.blockReason ? finishMessage('SAFETY') : finishMessage(res.finishReason);
+        if (stopMsg) { outcome = 'partial'; warning = stopMsg; break; }
+
+        const last = maxT(job.committed);
+        if (last === null) {
+          if (res.finishReason === 'MAX_TOKENS') warning = '出力の上限に達したため、途中までの結果です。';
+          if (!job.committed.length) { outcome = 'partial'; warning = '文字起こしの結果が空でした。音声のない動画か、Geminiが動画を読み込めなかった可能性があります。'; }
+          break;
+        }
+        const clearlyEarly = job.duration && last < job.duration - 120;
+        if (sawEnd && !clearlyEarly) break;
+        if (job.duration && last >= job.duration - 20) break;
+        if (last <= job.lastProgress) {
+          outcome = 'partial';
+          warning = `${fmt(last)} から先に進めませんでした。ここまでの結果を表示しています。`;
+          break;
+        }
+        job.lastProgress = last;
+
+        // Next pass restarts at the beginning of the last paragraph (it may be cut off).
+        const tailSeg = job.committed[job.committed.length - 1];
+        if (job.committed.length > 1 && tailSeg.t !== null) {
+          job.committed.pop();
+          job.passStart = tailSeg.t;
+        } else {
+          job.passStart = last;
+        }
+      }
+      if (job.pass >= MAX_PASSES) { outcome = 'partial'; warning = '処理回数の上限に達しました。ここまでの結果を表示しています。'; }
+    } catch (e) {
+      outcome = 'error';
+      warning = e && e.message ? e.message : String(e);
+      if (job.aborted) outcome = 'stopped';
+    } finally {
+      // keep whatever streamed in the interrupted pass
+      if (job.raw) {
+        job.committed = job.committed.concat(filterPass(parseSegments(job.raw), job.passStart, job.pass));
+        job.raw = '';
+      }
+      job.running = false;
+      setRunning(false);
+    }
+
+    viewSegs = job.committed.slice();
+    viewTitle = job.title || `YouTube動画（${job.videoId}）`;
+    setStatus('');
+    if (outcome === 'done') {
+      setMsg(warning ? 'warn' : 'info', warning || '文字起こしが完了しました。');
+      setBadge('完了');
+      el.barWrap.hidden = true;
+    } else {
+      const canResume = viewSegs.length > 0 || outcome === 'error';
+      setMsg(outcome === 'stopped' ? 'warn' : 'error', warning + (canResume ? '\n「続きから再開」で、ここから先を取りにいけます。' : ''));
+      setBadge(outcome === 'stopped' ? '停止' : '要確認');
+      el.resume.hidden = !canResume;
+      if (canResume) prepareResume();
+    }
+    render();
+    saveHistory(outcome === 'done' ? '完了' : '途中');
+  }
+
+  function prepareResume() {
+    const last = maxT(job.committed);
+    if (last === null) { job.passStart = 0; job.committed = []; job.pass = 0; return; }
+    const tailSeg = job.committed[job.committed.length - 1];
+    if (job.committed.length > 1 && tailSeg.t !== null) { job.committed.pop(); job.passStart = tailSeg.t; }
+    else job.passStart = last;
+    job.pass = Math.max(1, job.pass + 1);
+    job.lastProgress = -1;
+    job.compat = 0;
+  }
+
+  // ---------- history ----------
+  function loadHistory() {
+    try { const v = JSON.parse(store.get(LS.hist, '[]')); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  }
+  function writeHistory(list) {
+    let l = list.slice(0, HISTORY_LIMIT);
+    while (l.length && !store.set(LS.hist, JSON.stringify(l))) l = l.slice(0, l.length - 1);
+  }
+  function saveHistory(status) {
+    if (!job || !viewSegs.length) { renderHistory(); return; }
+    const list = loadHistory().filter((h) => h.id !== job.histId);
+    list.unshift({ id: job.histId, videoId: job.videoId, title: viewTitle, createdAt: job.createdAt, status, segs: viewSegs });
+    writeHistory(list);
+    renderHistory();
+  }
+  function renderHistory() {
+    const list = loadHistory();
+    el.hist.innerHTML = '';
+    el.histEmpty.hidden = list.length > 0;
+    el.histCount.textContent = list.length ? `${list.length}件` : '';
+    for (const h of list) {
+      const li = document.createElement('li');
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'h-main';
+      const t = document.createElement('span'); t.className = 'h-title'; t.textContent = h.title || h.videoId;
+      const d = new Date(h.createdAt);
+      const sub = document.createElement('span'); sub.className = 'h-sub';
+      sub.textContent = `${h.status}・${isNaN(d) ? '' : d.toLocaleString('ja-JP')}・${countChars(h.segs || []).toLocaleString('ja-JP')}文字`;
+      main.append(t, sub);
+      main.addEventListener('click', () => openHistory(h));
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'ghost small danger-btn'; del.textContent = '削除';
+      del.setAttribute('aria-label', `${h.title || h.videoId} を削除`);
+      del.addEventListener('click', () => { writeHistory(loadHistory().filter((x) => x.id !== h.id)); renderHistory(); });
+      li.append(main, del);
+      el.hist.appendChild(li);
+    }
+  }
+  function openHistory(h) {
+    if (job && job.running) return;
+    job = null;
+    viewSegs = h.segs || [];
+    viewTitle = h.title || h.videoId;
+    showHeader(h.videoId, viewTitle);
+    el.url.value = `https://www.youtube.com/watch?v=${h.videoId}`;
+    setBadge(h.status);
+    setMsg(null);
+    setStatus('');
+    el.barWrap.hidden = true;
+    el.resume.hidden = true;
+    render();
+  }
+
+  // ---------- copy / save ----------
+  async function copyText() {
+    const text = el.out.textContent;
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) { /* ignore */ }
+      ta.remove();
+    }
+    const old = el.copy.textContent;
+    el.copy.textContent = 'コピーしました';
+    setTimeout(() => { el.copy.textContent = old; }, 1500);
+  }
+  function saveTxt() {
+    const name = (viewTitle || el.title.textContent || 'transcript').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) + '.txt';
+    const blob = new Blob([el.out.textContent], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---------- key / settings ----------
+  function refreshKeyState() {
+    const has = !!store.get(LS.key, '');
+    el.keyState.textContent = has ? '保存済み' : '未設定';
+    el.keyState.classList.toggle('missing', !has);
+    el.clearKey.hidden = !has;
+    el.key.placeholder = has ? '保存済み（変更する場合のみ入力）' : 'AIza...';
+  }
+
+  el.saveKey.addEventListener('click', () => {
+    const v = el.key.value.trim();
+    if (!v) { el.key.focus(); return; }
+    if (!store.set(LS.key, v)) { setMsg('warn', 'このブラウザではキーを保存できませんでした。ページを開いている間だけ使います。'); }
+    el.key.value = '';
+    refreshKeyState();
+    setMsg('info', 'APIキーを保存しました。');
+  });
+  el.clearKey.addEventListener('click', () => { store.del(LS.key); refreshKeyState(); });
+  el.model.addEventListener('change', () => store.set(LS.model, el.model.value.trim() || DEFAULT_MODEL));
+  for (const s of [el.lang, el.style, el.windowMin]) {
+    s.addEventListener('change', () => store.set(LS.opts, JSON.stringify({ lang: el.lang.value, style: el.style.value, windowMin: el.windowMin.value })));
+  }
+  el.start.addEventListener('click', () => start(false));
+  el.resume.addEventListener('click', () => start(true));
+  el.url.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !el.start.disabled) start(false); });
+  el.stop.addEventListener('click', () => { if (job && job.running) { job.aborted = true; job.controller.abort(); } });
+  el.showTs.addEventListener('change', () => { store.set('ytt.showTs', el.showTs.checked ? '1' : '0'); render(); });
+  el.copy.addEventListener('click', copyText);
+  el.save.addEventListener('click', saveTxt);
+
+  // ---------- init ----------
+  el.model.value = store.get(LS.model, DEFAULT_MODEL);
+  try {
+    const o = JSON.parse(store.get(LS.opts, '{}'));
+    if (o.lang) el.lang.value = o.lang;
+    if (o.style) el.style.value = o.style;
+    if (o.windowMin) el.windowMin.value = o.windowMin;
+  } catch (e) { /* ignore */ }
+  el.showTs.checked = store.get('ytt.showTs', '0') === '1';
+  const qp = new URLSearchParams(location.search).get('url');
+  if (qp) el.url.value = qp;
+  refreshKeyState();
+  if (!store.get(LS.key, '')) el.settings.open = true;
+  renderHistory();
+
+  // exposed for automated tests only
+  window.__ytt = { parseVideoId, parseSegments, fmt, userPrompt, buildBody };
+})();
+</script>
+</body>
+</html>
