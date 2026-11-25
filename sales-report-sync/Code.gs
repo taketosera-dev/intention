@@ -192,6 +192,22 @@ function formatYen(n) {
   return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+/**
+ * 報告のプラン名を「設定」タブの正式なプラン名にそろえる（略称・表記ゆれ対策）。
+ * 完全一致がなければ、前方一致（略称）が1つだけのときにその名前を使う。決められなければ null。
+ */
+function resolvePlanName(name, plans) {
+  var n = normalizeName(name);
+  if (!n) return null;
+  var names = Object.keys(plans);
+  for (var i = 0; i < names.length; i++) if (normalizeName(names[i]) === n) return names[i];
+  var hits = names.filter(function (p) {
+    var q = normalizeName(p);
+    return q.indexOf(n) === 0 || n.indexOf(q) === 0;
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+
 function isoToSheetDate(s) {
   var m = normalizeText(s).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   return m ? normDate(m[1] + '/' + m[2] + '/' + m[3]) : '';
@@ -252,11 +268,12 @@ function buildUpdates(ex, meetingNo, meetingDate, parentTime, plans) {
   }
 
   if (result && CLOSED_RESULTS.indexOf(result) >= 0 && ex.plan) {
-    var price = (ex.amount && ex.amount > 0) ? ex.amount : plans[ex.plan];
-    if (plans[ex.plan] == null && !(ex.amount > 0)) {
-      res.notes.push('プラン「' + ex.plan + '」が設定タブにありません');
+    var planName = resolvePlanName(ex.plan, plans);
+    if (!planName) {
+      res.notes.push('プラン「' + ex.plan + '」が設定タブのどのプラン名とも一致しません');
     } else {
-      res.updates.push({ col: 'T', value: ex.plan + ' ' + formatYen(price) });
+      var price = (ex.amount && ex.amount > 0) ? ex.amount : plans[planName];
+      res.updates.push({ col: 'T', value: planName + ' ' + formatYen(price) });
     }
   }
 
@@ -384,7 +401,7 @@ var SYSTEM_PROMPT = [
   '- 同じ日に時間を変えて実施した場合（例: 12時は未着座で13時に実施）は、実施した時刻を actual_time に入れ、実施した商談の結果を返す。',
   '- 次にお客様と会う（話す）予定の日時が書かれていれば、next_meeting_date と next_meeting_time に入れる。2回目・クロージングなどの商談に限らず、成約言質のあとのローン手続きや契約・決済の手続き（例: 「27日15:00〜」）も含める。',
   '- 日付は面談日を基準に年と月を補い、YYYY-MM-DD で返す（例: 面談日 2026-11-21 で「24日」→ 2026-11-24）。時刻は 24 時間制の HH:MM で返す。',
-  '- plan は成約・成約言質のときだけ、報告にプラン名があれば入れる。amount は報告に総額（円）がはっきり書かれているときだけ整数で入れる。',
+  '- plan は成約・成約言質のときだけ、報告にプラン名があれば入れる。選べるプラン名のどれかで返し、報告が略称や表記ゆれ（語尾の省略など）でも正式なプラン名に直す。amount は報告に総額（円）がはっきり書かれているときだけ整数で入れる。',
   '- reason は保留・失注・成約言質のときに、Slack の報告に書かれている内容をもとに詳しく書く。結果の理由に加えて、その背景（お客様の状況・仕事や収入・懸念点・検討状況・担当者が考える次の打ち手など）を、報告にある範囲で 150〜300 文字の文章にまとめる。報告に書かれていないことは推測で書かない。',
   '- 入力に「シートの今の理由欄」がある場合は、それを土台に今回の報告の内容を足して、更新した全文を reason に返す（今回の結果と合わなくなった部分は書き換える）。',
   '- まだ結果が報告されていない（「入ります」や待機中の連絡、相談だけ）なら is_report を false にする。',
@@ -1217,5 +1234,6 @@ if (typeof module !== 'undefined') {
     comparable: comparable, rankModels: rankModels, buildPrompt: buildPrompt, responseSchema: responseSchema,
     rowKeyOf: rowKeyOf, formatYen: formatYen, threadFingerprint: threadFingerprint,
     threadKeyFromLink: threadKeyFromLink, buildThreadMap: buildThreadMap, buildOwnership: buildOwnership,
+    resolvePlanName: resolvePlanName,
   };
 }

@@ -45,13 +45,10 @@ Slack の営業報告チャンネルに書かれた商談の結果を読み、�
 
 ### 1. Slack アプリを作る
 
-1. https://api.slack.com/apps を開き、「Create New App」→「From scratch」を選びます。名前（例: 営業報告転記）とワークスペースを指定します。
-2. 「OAuth & Permissions」の「Bot Token Scopes」に、次の3つを追加します。
-   - `channels:history`
-   - `groups:history`
-   - `users:read`
-3. 「Install to Workspace」でインストールし、表示される「Bot User OAuth Token」（`xoxb-` で始まる）をコピーします。
-4. 報告を読むチャンネル（#ad-営業報告チャンネル、#threads-営業報告チャンネル）で、`/invite @営業報告転記` と送ってアプリを招待します。
+1. [こちらのリンク](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22%E5%96%B6%E6%A5%AD%E5%A0%B1%E5%91%8A%E8%BB%A2%E8%A8%98%22%2C%22description%22%3A%22%E5%96%B6%E6%A5%AD%E5%A0%B1%E5%91%8A%E3%83%81%E3%83%A3%E3%83%B3%E3%83%8D%E3%83%AB%E3%81%AE%E7%B5%90%E6%9E%9C%E3%82%92%E9%A1%A7%E5%AE%A2%E7%AE%A1%E7%90%86%E3%82%B7%E3%83%BC%E3%83%88%E3%81%AB%E8%BB%A2%E8%A8%98%E3%81%97%E3%81%BE%E3%81%99%22%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22%E5%96%B6%E6%A5%AD%E5%A0%B1%E5%91%8A%E8%BB%A2%E8%A8%98%22%2C%22always_online%22%3Afalse%7D%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%5D%7D%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%7D%7D)を開くと、名前（営業報告転記）と必要な権限が入った状態でアプリの作成画面が開きます。ワークスペースを選び、「Next」→「Create」と進みます。
+   - リンクが開けない場合は、https://api.slack.com/apps の「Create New App」→「From scratch」で作り、「OAuth & Permissions」の「Bot Token Scopes」に `channels:history`・`groups:history`・`users:read` を追加します。
+2. 「Install to Workspace」（または「Install App」）でインストールし、表示される「Bot User OAuth Token」（`xoxb-` で始まる）をコピーします。
+3. 報告を読むチャンネル（#ad-営業報告チャンネル、#threads-営業報告チャンネル）で、`/invite @営業報告転記` と送ってアプリを招待します。
 
 ### 2. Gemini の API キーを用意する
 
@@ -65,7 +62,7 @@ Slack の営業報告チャンネルに書かれた商談の結果を読み、�
 ### 3. スプレッドシートに組み込む
 
 1. 営業管理シートを開き、「拡張機能」→「Apps Script」を開きます。
-2. 最初からある `コード.gs` の中身をすべて消し、このフォルダの `Code.gs` の中身を貼り付けて保存します。
+2. 最初からある `コード.gs` の中身をすべて消し、このフォルダの `Code.gs` の中身を貼り付けて保存します（GitHub で `Code.gs` を開き、「Raw」を押すと全文をコピーしやすくなります）。
 3. 左の歯車（プロジェクトの設定）→「スクリプト プロパティ」で、次の2つを追加します。
    - `SLACK_BOT_TOKEN`: 手順1でコピーしたトークン
    - `GEMINI_API_KEY`: 手順2の API キー
@@ -86,6 +83,11 @@ Slack の営業報告チャンネルに書かれた商談の結果を読み、�
 - **「要確認」タブ**: ツールが判断できなかった報告が並びます。シートを直したら「対応済み」にチェックを入れてください。
 - **「設定」タブ**: 読むチャンネル、照合するタブ、プランと金額、報告なしとみなす日数を変えられます。
 - **止めたいとき**: 「自動転記」→「定期実行を止める」。
+
+## 定期実行の回数と費用
+
+- **Apps Script と Slack**: 無料です。30分ごとの実行は、Google が決めている1日の実行時間の上限（無料のアカウントで90分、Google Workspace で6時間）に対して、余裕のある使い方です（変化がない回は数秒〜十数秒で終わります）。
+- **Gemini**: 担当者の返信が増えたり書き換わったりしたスレッドだけを読ませるので、費用は **実行回数ではなく報告の件数** で決まります。実行を15分ごとや1時間ごとに変えても、費用はほとんど変わりません。
 
 ## うまくいかないとき
 

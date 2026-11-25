@@ -258,6 +258,20 @@ test('成約言質のあとの手続きの日時は3回目の予定に入れる'
   assert.strictEqual(r.notes.length, 0);
 });
 
+test('プラン名の略称は正式名にそろえる', () => {
+  const plans = { ロングプラン: 300000, ショート: 100000 };
+  assert.strictEqual(F.resolvePlanName('ロング', plans), 'ロングプラン');
+  assert.strictEqual(F.resolvePlanName('ロングプラン', plans), 'ロングプラン');
+  assert.strictEqual(F.resolvePlanName('ショート', plans), 'ショート');
+  assert.strictEqual(F.resolvePlanName('ミドル', plans), null);
+  assert.strictEqual(F.resolvePlanName('', plans), null);
+  const r = F.buildUpdates({ is_report: true, result: '成約言質', plan: 'ロング', confidence: 'high' }, 2, '2026/11/24', '12:00', plans);
+  assert.strictEqual(asMap(r).T, 'ロングプラン 300,000');
+  const r2 = F.buildUpdates({ is_report: true, result: '成約言質', plan: 'ミドル', confidence: 'high' }, 2, '2026/11/24', '12:00', plans);
+  assert.ok(!('T' in asMap(r2)));
+  assert.strictEqual(r2.notes.length, 1);
+});
+
 test('報告に金額があればそちらを使う', () => {
   const r = upd({ is_report: true, result: '成約', plan: 'プランA', amount: 250000, confidence: 'high' }, 2, '2026/11/24', '12:00');
   assert.strictEqual(asMap(r).T, 'プランA 250,000');
