@@ -48,7 +48,7 @@ Slack の営業報告チャンネルに書かれた商談の結果を読み、�
 1. [こちらのリンク](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22%E5%96%B6%E6%A5%AD%E5%A0%B1%E5%91%8A%E8%BB%A2%E8%A8%98%22%2C%22description%22%3A%22%E5%96%B6%E6%A5%AD%E5%A0%B1%E5%91%8A%E3%83%81%E3%83%A3%E3%83%B3%E3%83%8D%E3%83%AB%E3%81%AE%E7%B5%90%E6%9E%9C%E3%82%92%E9%A1%A7%E5%AE%A2%E7%AE%A1%E7%90%86%E3%82%B7%E3%83%BC%E3%83%88%E3%81%AB%E8%BB%A2%E8%A8%98%E3%81%97%E3%81%BE%E3%81%99%22%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22sales-report-bot%22%2C%22always_online%22%3Afalse%7D%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%5D%7D%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%7D%7D)を開くと、名前（営業報告転記）と必要な権限が入った状態でアプリの作成画面が開きます。ワークスペースを選び、「Next」→「Create」と進みます。
    - リンクが開けない場合は、https://api.slack.com/apps の「Create New App」→「From scratch」で作り、「OAuth & Permissions」の「Bot Token Scopes」に `channels:history`・`groups:history`・`users:read` を追加します。
 2. 「Install to Workspace」（または「Install App」）でインストールし、表示される「Bot User OAuth Token」（`xoxb-` で始まる）をコピーします。
-3. 報告を読むチャンネル（#ad-営業報告チャンネル、#threads-営業報告チャンネル）で、`/invite @営業報告転記` と送ってアプリを招待します（候補に出る「営業報告転記」を選びます）。
+3. 報告を読むチャンネル（#ad-営業報告チャンネル、#threads-営業報告チャンネル）にアプリを追加します。チャンネル名 →「インテグレーション」→「アプリを追加する」で **`sales-report-bot`** と入力して選ぶか、メッセージ欄に `/invite @sales-report-bot` と送ります（日本語のアプリ名「営業報告転記」では検索に出てこないことがあります）。
 
 ### 2. Gemini の API キーを用意する
 
