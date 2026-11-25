@@ -262,6 +262,10 @@ function buildUpdates(ex, meetingNo, meetingDate, parentTime, plans) {
   if (m.attend && attendance) res.updates.push({ col: m.attend, value: attendance });
   if (result) res.updates.push({ col: m.result, value: result });
 
+  // 後の回の結果がすでにある場合、前の回のスレッドから次回日時・プラン・理由を上書きしない（後の回の情報を守るため）
+  var laterResults = MEETINGS.slice(meetingNo).map(function (x) { return x.result; });
+  function guarded(u) { u.unlessLater = laterResults; return u; }
+
   var held = meetingNo === 1 ? attendance === '着座' : (result && NOT_HELD_RESULTS.indexOf(result) < 0);
   if (ex.next_meeting_date) {
     var nd = isoToSheetDate(ex.next_meeting_date);
@@ -275,8 +279,8 @@ function buildUpdates(ex, meetingNo, meetingDate, parentTime, plans) {
     } else if (!m.next) {
       res.notes.push('4回目以降の予定（' + nd + (nt ? ' ' + nt : '') + '）は入れる列がありません');
     } else {
-      res.updates.push({ col: m.next.date, value: nd });
-      if (nt) res.updates.push({ col: m.next.time, value: nt });
+      res.updates.push(guarded({ col: m.next.date, value: nd }));
+      if (nt) res.updates.push(guarded({ col: m.next.time, value: nt }));
     }
   }
 
@@ -286,14 +290,14 @@ function buildUpdates(ex, meetingNo, meetingDate, parentTime, plans) {
       res.notes.push('プラン「' + ex.plan + '」が設定タブのどのプラン名とも一致しません');
     } else {
       var price = (ex.amount && ex.amount > 0) ? ex.amount : plans[planName];
-      res.updates.push({ col: 'T', value: planName + ' ' + formatYen(price) });
+      res.updates.push(guarded({ col: 'T', value: planName + ' ' + formatYen(price) }));
     }
   }
 
   if (ex.reason) {
     var reason = normalizeText(ex.reason).replace(/\s+/g, ' ');
     if (reason.length > APP.REASON_MAX_LEN) reason = reason.slice(0, APP.REASON_MAX_LEN - 1) + '…';
-    if (reason) res.updates.push({ col: 'U', value: reason });
+    if (reason) res.updates.push(guarded({ col: 'U', value: reason }));
   }
   return res;
 }
@@ -401,8 +405,8 @@ var SYSTEM_PROMPT = [
   '- 結果は担当者本人の返信をもとに判断する。ほかの人の応援コメントは無視する。ただし、ほかの人の返信に事実（例: 再調整を依頼した）があれば参考にしてよい。',
   '- スレッドの中で状況が変わった場合（例: 「○日まで検討」のあとに「失注」）は、最新の状態を返す。',
   '- 言い方と値の対応:',
-  '  ・未着座、来ない、入室されない → attendance「飛び」、result「飛び」',
-  '  ・予定変更の依頼、日程変更 → attendance「リスケ」、result「未実施」',
+  '  ・未着座、来ない、入室されない → attendance「飛び」、result「飛び」。そのあとに再調整（日程の取り直し）を依頼した場合も「飛び」のままにする',
+  '  ・商談の前にお客様から予定変更の依頼があった → attendance「リスケ」、result「未実施」',
   '  ・キャンセル → attendance「キャンセル」、result「キャンセル」',
   '  ・ブリッジ、次回（2回目、クロージング、クロ、戦略設計など）の日時が決まった → attendance「着座」、result「保留」、次回の日時を next_meeting_date と next_meeting_time に入れる',
   '  ・二回目調整など、次回の日時が未定 → attendance「着座」、result「保留」、next_meeting_date は null',
@@ -880,16 +884,19 @@ function applyUpdates_(ctx, target, row, rowKey, updates, base, channel, ts) {
     var current = row[ci];
     var ownKey = rowKey + '|' + u.col;
     var owned = ctx.owned.hasOwnProperty(ownKey) ? ctx.owned[ownKey] : null;
-    var decision = u.fillOnly && normalizeText(current) !== '' ? 'same' : decideCell(u.col, current, u.value, owned);
+    var filled = normalizeText(current) !== '';
+    var laterDone = filled && (u.unlessLater || []).some(function (c) { return normalizeText(row[colIdx(c)]) !== ''; });
+    var decision = laterDone ? 'later' : (u.fillOnly && filled) ? 'same' : decideCell(u.col, current, u.value, owned);
     if (ctx.dryRun) {
       var label = decision === 'write' ? '書き込み予定' : decision === 'same' ? '同じ値（変更なし）'
+        : decision === 'later' ? '後の回の報告があるため変更しない'
         : u.col === 'U' ? '人が書いた理由があるため変更しない' : '要確認（人が入力した値と違う）';
       if (ctx.beforeStart) label += '（参考: 処理開始日時より前のスレッドのため、本番では処理しない）';
       ctx.preview.push([target.tab, sheetRow, row[colIdx('B')], target.meetingNo + '回目', u.col, current, u.value, label, base.link()]);
-      if (decision === 'write') { row[ci] = u.value; ctx.stats.writes++; }
+      if (decision === 'write') { row[ci] = u.value; ctx.owned[ownKey] = u.value; ctx.stats.writes++; } // 本番と同じ判断になるよう、書いたことにする
       return;
     }
-    if (decision === 'same') return;
+    if (decision === 'same' || decision === 'later') return;
     if (decision === 'conflict' && u.col === 'U') return; // 人が書いた理由は尊重し、要確認にも出さない
     if (decision === 'conflict') {
       addReview_(ctx, merge_(base, {

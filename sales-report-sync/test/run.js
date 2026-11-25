@@ -579,6 +579,48 @@ try {
     assert.ok(!reviewRows(w5.review).some((x) => /合う予定/.test(x.reason) && x.key.includes(w5.T.a2)), '行が見つからない扱いにしない');
   });
 
+  test('前の回のスレッドを読み直しても、後の回の時刻・理由を戻さない（試運転と本番で同じ判断）', () => {
+    const w6 = buildWorld();
+    const pre = { J: '2026/11/21', K: '17:30', L: '着座', M: '保留', N: '2026/11/24', O: '13:00', P: '成約言質', Q: '2026/11/27', R: '15:00', T: 'プランB 200,000', U: '2回目で言質。ローン審査待ち' };
+    const link = (ts) => 'https://example.slack.com/archives/C0TESTAAA1/p' + ts.replace('.', '');
+    let r = 2;
+    Object.keys(pre).forEach((col) => {
+      w6.tabA.set(4, 'ABCDEFGHIJKLMNOPQRSTU'.indexOf(col) + 1, pre[col]);
+      const ts = 'JKLMN'.includes(col) ? w6.T.a1 : w6.T.a2;
+      ['2026/11/26 01:11:45', '顧客A', '100', '2026/11/21', col, pre[col], link(ts), '初回の一括転記'].forEach((v, j) => w6.log.set(r, j + 1, v));
+      r++;
+    });
+    w6.ss.getSheetByName('設定').set(4, 2, '2026/11/25 00:00');
+    // 初回のスレッドにだけ、処理開始日時より後の返信がついた
+    const slack3 = (method, p) => {
+      const res = w6.slack(method, p);
+      if (method === 'conversations.history' && p.channel === 'C0TESTAAA1') {
+        res.messages.forEach((m) => { if (m.ts === w6.T.a1) m.latest_reply = tsAt(2026, 11, 25, 10, 0); else if (m.latest_reply) m.latest_reply = tsAt(2026, 11, 24, 15, 0); });
+      }
+      return res;
+    };
+    const g = (prompt) => {
+      if (prompt.includes('17時半広告面談')) return geminiOk({ is_report: true, attendance: '着座', result: '保留', next_meeting_date: '2026-11-24', next_meeting_time: '12:00', reason: '初回の内容（ブリッジ）', confidence: 'high' });
+      return w6.gemini(prompt);
+    };
+    const props = { SLACK_BOT_TOKEN: 'x', GEMINI_API_KEY: 'y' };
+    // 試運転
+    const envD = makeEnv({ ss: w6.ss, slack: slack3, gemini: g, props });
+    envD.runSync({ dryRun: true });
+    const pv = w6.ss.getSheetByName('試運転結果');
+    const rowsPv = [];
+    for (let i = 2; i <= pv.getLastRow(); i++) rowsPv.push({ col: pv.get(i, 5), label: pv.get(i, 8), name: pv.get(i, 3), mt: pv.get(i, 4) });
+    const first = rowsPv.filter((x) => x.name === 'テストA' && x.mt === '1回目');
+    assert.ok(/後の回の報告があるため変更しない/.test(first.find((x) => x.col === 'O').label), '試運転: O は変更しない');
+    assert.ok(/後の回の報告があるため変更しない/.test(first.find((x) => x.col === 'U').label), '試運転: U は変更しない');
+    // 本番
+    const envR = makeEnv({ ss: w6.ss, slack: slack3, gemini: g, props });
+    envR.runSync({ dryRun: false });
+    assert.strictEqual(cell(w6.tabA, 4, 'O'), '13:00');
+    assert.strictEqual(cell(w6.tabA, 4, 'U'), '2回目で言質。ローン審査待ち');
+    assert.strictEqual(cell(w6.tabA, 4, 'P'), '成約言質');
+  });
+
   test('列の見出しがずれていたら何も書かずに止める', () => {
     const w2 = buildWorld();
     w2.tabA.set(3, 13, '結果'); // M 列の見出しを変える
