@@ -71,6 +71,19 @@ function normalizeName(s) {
 
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
+/** 貼り付けたトークンやキーの前後の空白・改行・引用符を取り除く。 */
+function cleanSecret(s) {
+  return String(s == null ? '' : s).replace(/^[\s"'“”「」]+|[\s"'“”「」]+$/g, '');
+}
+
+/** トークンの中身は出さずに、種類（先頭5文字）と長さだけを説明する。 */
+function describeToken(token) {
+  var t = String(token || '');
+  var kind = /^xoxb-/.test(t) ? 'ボットのトークン（xoxb-）' : /^xoxp-/.test(t) ? 'ユーザーのトークン（xoxp-）'
+    : 'xoxb- で始まらない値（先頭: ' + t.slice(0, 5) + '）';
+  return kind + '、' + t.length + '文字';
+}
+
 /** "2026/11/24" や "2026-11-24" → "2026/11/24"。読めなければ ''。 */
 function normDate(s) {
   var m = normalizeText(s).match(/(\d{4})\s*[\/\-年.]\s*(\d{1,2})\s*[\/\-月.]\s*(\d{1,2})/);
@@ -558,8 +571,8 @@ function runSync(opts) {
 function loadContext_(dryRun) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var props = PropertiesService.getScriptProperties();
-  var token = props.getProperty('SLACK_BOT_TOKEN');
-  var geminiKey = props.getProperty('GEMINI_API_KEY');
+  var token = cleanSecret(props.getProperty('SLACK_BOT_TOKEN'));
+  var geminiKey = cleanSecret(props.getProperty('GEMINI_API_KEY'));
   if (!token) throw new ConfigError('スクリプト プロパティに SLACK_BOT_TOKEN がありません');
   if (!geminiKey) throw new ConfigError('スクリプト プロパティに GEMINI_API_KEY がありません');
 
@@ -1005,7 +1018,8 @@ function slackApi_(ctx, method, params) {
     if (body.ok) return body;
     var err = body.error || 'unknown_error';
     if (/invalid_auth|not_authed|account_inactive|token_revoked|token_expired/.test(err)) {
-      throw new ConfigError('Slack のトークンが使えません（' + err + '）。SLACK_BOT_TOKEN を確認してください');
+      throw new ConfigError('Slack のトークンが使えません（' + err + '）。登録されているのは ' + describeToken(ctx.token) +
+        '。Slack API の「Install App」にある Bot User OAuth Token を「Copy」して、SLACK_BOT_TOKEN に貼り直してください');
     }
     if (/missing_scope/.test(err)) {
       throw new ConfigError('Slack アプリの権限が足りません（' + method + ': ' + (body.needed || '') + '）。README の権限を追加して再インストールしてください');
@@ -1234,6 +1248,6 @@ if (typeof module !== 'undefined') {
     comparable: comparable, rankModels: rankModels, buildPrompt: buildPrompt, responseSchema: responseSchema,
     rowKeyOf: rowKeyOf, formatYen: formatYen, threadFingerprint: threadFingerprint,
     threadKeyFromLink: threadKeyFromLink, buildThreadMap: buildThreadMap, buildOwnership: buildOwnership,
-    resolvePlanName: resolvePlanName,
+    resolvePlanName: resolvePlanName, cleanSecret: cleanSecret, describeToken: describeToken,
   };
 }

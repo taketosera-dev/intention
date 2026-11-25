@@ -336,6 +336,15 @@ test('ログのリンクから、スレッドと行・回数の対応を作る',
   });
 });
 
+test('貼り付けたトークンの前後の空白・改行・引用符を取り除く', () => {
+  assert.strictEqual(F.cleanSecret('  xoxb-123-abc\n'), 'xoxb-123-abc');
+  assert.strictEqual(F.cleanSecret('"xoxb-123-abc"'), 'xoxb-123-abc');
+  assert.strictEqual(F.cleanSecret(null), '');
+  assert.ok(/ボットのトークン（xoxb-）、12文字/.test(F.describeToken('xoxb-123-abc')));
+  assert.ok(!/123-abc/.test(F.describeToken('xoxb-123-abc')), 'トークンの中身は出さない');
+  assert.ok(/xoxb- で始まらない値（先頭: abcde）/.test(F.describeToken('abcdefgh')));
+});
+
 test('モデルは安定版 Flash を優先', () => {
   const list = F.rankModels(['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-2.5-flash-preview-05-20', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-image']);
   assert.strictEqual(list[0], 'gemini-2.5-flash');
